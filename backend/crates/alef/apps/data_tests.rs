@@ -194,9 +194,9 @@ fn export_import_round_trips_every_byte() {
         fs::read(target.join("window-state.ktav")).unwrap(),
         b"label: main\n"
     );
-    // The backup keeps the old (original) data.
+    // The target did not exist, so there was nothing to keep.
     let backup = target.with_file_name("restored.before-import");
-    assert!(backup.is_dir());
+    assert!(!backup.exists());
 }
 
 /// Imports with the running check overridden, because tests spawn no applications.
