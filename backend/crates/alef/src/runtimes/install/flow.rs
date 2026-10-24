@@ -13,7 +13,7 @@ use crate::{
     application::{
         pipeline,
         plan::{application_base_dirs, make_package_plan, package_path_vars, Plan},
-        source::{Prepared, ARCHIVE_LIMIT, ICON_LIMIT},
+        source::{Prepared, ICON_LIMIT},
         trust::{decide_with_asker, TrustAsker, TrustFailure, TrustInputs},
     },
     consent::ask::AppSummary,
@@ -86,20 +86,24 @@ fn artifact(record: &AppRecord, dir: &Path, executable: &Path) -> Artifact {
         icon: record.icon.as_ref().map(|_| dir.join("icon.png")),
     }
 }
-fn bounded_file_bytes(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, InstallError> {
-    let mut file = match std::fs::File::open(path) {
+fn stored_package_bytes(path: &Path) -> Result<Option<Vec<u8>>, InstallError> {
+    let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(io_error(e)),
     };
+    let size = file.metadata().map_err(io_error)?.len();
     let mut bytes = Vec::new();
-    file.by_ref()
-        .take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(io_error)?;
-    if bytes.len() as u64 > limit {
-        return Err(error("APP_STORE", "stored file exceeds size limit", 1));
+    if let Ok(need) = usize::try_from(size) {
+        bytes.try_reserve_exact(need).map_err(|_| {
+            error(
+                "APP_STORE",
+                format!("cannot allocate {size} bytes for the stored package"),
+                1,
+            )
+        })?;
     }
+    file.read_to_end(&mut bytes).map_err(io_error)?;
     Ok(Some(bytes))
 }
 
@@ -201,13 +205,6 @@ pub async fn install_in(
         return Err(error(
             "INVALID_ARGUMENT",
             "home and executable paths must be absolute",
-            2,
-        ));
-    }
-    if bytes.len() as u64 > ARCHIVE_LIMIT {
-        return Err(error(
-            "PACKAGE_RUN_LIMIT",
-            "archive bytes exceed size limit",
             2,
         ));
     }
@@ -339,7 +336,7 @@ pub async fn install_in(
             }
             std::cmp::Ordering::Equal
                 if old_record.version == version
-                    && bounded_file_bytes(&app_dir.join(&old_record.package), ARCHIVE_LIMIT)
+                    && stored_package_bytes(&app_dir.join(&old_record.package))
                         .map_err(|e| e)?
                         .as_deref()
                         == Some(bytes.as_slice()) =>

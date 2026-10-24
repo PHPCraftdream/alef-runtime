@@ -11,7 +11,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{application::window, consent::ask::AppSummary, consent::runtime_home};
+use crate::{consent::ask::AppSummary, consent::runtime_home};
 use alef_core::security::permissions::store;
 
 /// A single record file is bounded so a hostile folder cannot balloon the parse step.
@@ -254,8 +254,14 @@ fn resolve_race(folder: &Path, written: &Pin) -> io::Result<Pin> {
 /// What the launcher knows about the package it asks trust for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrustQuestion {
-    Signed { fingerprint: String },
-    Unsigned { archive_digest: String },
+    Signed {
+        fingerprint: String,
+        size_bytes: u64,
+    },
+    Unsigned {
+        archive_digest: String,
+        size_bytes: u64,
+    },
 }
 
 /// The trust inputs the command line will fill (the wiring is the next task).
@@ -265,6 +271,8 @@ pub struct TrustInputs {
     pub trust_key: Option<String>,
     /// `--allow-unsigned`.
     pub allow_unsigned: bool,
+    /// The exact size of the package in bytes, shown once at first launch.
+    pub package_size: u64,
 }
 
 /// What trust was established: a pinned fingerprint, or an unsigned allowance without a pin.
@@ -335,6 +343,8 @@ pub fn decide(
                 }
             }
             let existing = load(folder, app_id).map_err(TrustFailure::Store)?;
+            let first = existing.is_none();
+            let mut asked = false;
             match existing {
                 Some(existing) if existing.public_key == public_key => {
                     Ok(TrustOutcome::Pinned(existing.fingerprint))
@@ -347,10 +357,14 @@ pub fn decide(
                 None => {
                     let accept = match &inputs.trust_key {
                         Some(_) => true,
-                        None => ask(&TrustQuestion::Signed {
-                            fingerprint: fingerprint.to_owned(),
-                        })
-                        .map_err(TrustFailure::Refused)?,
+                        None => {
+                            asked = true;
+                            ask(&TrustQuestion::Signed {
+                                fingerprint: fingerprint.to_owned(),
+                                size_bytes: inputs.package_size,
+                            })
+                            .map_err(TrustFailure::Refused)?
+                        }
                     };
                     if !accept {
                         return Err(TrustFailure::Refused(format!(
@@ -358,6 +372,9 @@ pub fn decide(
                         )));
                     }
                     pin(folder, app_id, public_key).map_err(TrustFailure::Store)?;
+                    if let Some(line) = first_launch_line(asked, first, inputs.package_size) {
+                        eprintln!("{line}");
+                    }
                     Ok(TrustOutcome::Pinned(fingerprint.to_owned()))
                 }
             }
@@ -369,71 +386,45 @@ pub fn decide(
                     "SIGNATURE_REQUIRED: {app_id} was previously accepted with a signing key"
                 )));
             }
-            let accept = inputs.allow_unsigned
-                || ask(&TrustQuestion::Unsigned {
+            let mut asked = false;
+            let accept = inputs.allow_unsigned || {
+                asked = true;
+                ask(&TrustQuestion::Unsigned {
                     archive_digest: archive_digest.to_owned(),
+                    size_bytes: inputs.package_size,
                 })
-                .map_err(TrustFailure::Refused)?;
+                .map_err(TrustFailure::Refused)?
+            };
             if !accept {
                 return Err(TrustFailure::Refused(format!(
                     "TRUST_REFUSED: {app_id} was not accepted for this launch"
                 )));
+            }
+            if let Some(line) = first_launch_line(asked, true, inputs.package_size) {
+                eprintln!("{line}");
             }
             Ok(TrustOutcome::UnsignedAllowed)
         }
     }
 }
 
-/// End-to-end runs only (`ALEF_E2E=1`): the answer to the trust question, accept or refuse.
-#[cfg(feature = "e2e")]
-pub const TRUST_VARIABLE: &str = "ALEF_E2E_TRUST";
-
-/// Who answers the trust question.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TrustAsker {
-    /// A fixed answer (end-to-end runs).
-    #[cfg(any(test, feature = "e2e"))]
-    Scripted(bool),
-    /// The user, in the runtime-owned trust window.
-    Window,
+/// The one-time size line for a launch that needs no ask: `None` when nothing is new.
+fn first_launch_line(asked: bool, first: bool, size_bytes: u64) -> Option<String> {
+    if asked || !first {
+        return None;
+    }
+    Some(format!(
+        "alef: Package size: {} ({} bytes)",
+        crate::application::source::format_size(size_bytes),
+        size_bytes
+    ))
 }
 
 #[cfg(feature = "e2e")]
-fn scripted_answer(read: &dyn Fn(&str) -> Option<String>) -> Result<Option<bool>, String> {
-    if read("ALEF_E2E").is_some_and(|value| value == "1") {
-        if let Some(text) = read(TRUST_VARIABLE) {
-            return match text.as_str() {
-                "accept" => Ok(Some(true)),
-                "refuse" => Ok(Some(false)),
-                other => Err(format!("{TRUST_VARIABLE}: not accept or refuse: {other:?}")),
-            };
-        }
-    }
-    Ok(None)
-}
-
-/// The scripted table applies only in an end-to-end run; otherwise the window asks.
-pub fn asker_from_environment() -> Result<TrustAsker, String> {
-    #[cfg(feature = "e2e")]
-    if let Some(answer) = scripted_answer(&|name| std::env::var(name).ok())? {
-        return Ok(TrustAsker::Scripted(answer));
-    }
-    Ok(TrustAsker::Window)
-}
-
-impl TrustAsker {
-    pub fn ask(&self, app: &AppSummary, question: &TrustQuestion) -> Result<bool, String> {
-        match self {
-            #[cfg(any(test, feature = "e2e"))]
-            Self::Scripted(answer) => Ok(*answer),
-            Self::Window => window::ask_in_window(&window::request_for_trust(app, question))
-                .and_then(|answered| match answered {
-                    Some(answer) => Ok(answer),
-                    None => Err("the trust window was closed without a decision".to_owned()),
-                }),
-        }
-    }
-}
+pub use crate::application::window::TRUST_VARIABLE;
+/// Who answers the trust question lives in [`crate::application::window`]; it is re-exported
+/// here so callers keep using `crate::application::trust::TrustAsker`.
+pub use crate::application::window::{asker_from_environment, TrustAsker};
 
 /// [`decide`] with the asker of the environment: the scripted answer or the trust window.
 pub fn decide_with_asker(
@@ -729,7 +720,8 @@ mod tests {
         assert_eq!(
             *asked,
             vec![TrustQuestion::Signed {
-                fingerprint: fp(&key)
+                fingerprint: fp(&key),
+                size_bytes: 0,
             }]
         );
         let stored = load(folder.path(), ID).unwrap().expect("a pin");
@@ -749,6 +741,7 @@ mod tests {
             &TrustInputs {
                 trust_key: Some(fp(&key)),
                 allow_unsigned: false,
+                package_size: 0,
             },
             &mut recorder(&questions, true),
         )
@@ -775,6 +768,7 @@ mod tests {
             &TrustInputs {
                 trust_key: Some("nothex".to_owned()),
                 allow_unsigned: false,
+                package_size: 0,
             },
             &mut recorder(&questions, true),
         )
@@ -792,6 +786,7 @@ mod tests {
             &TrustInputs {
                 trust_key: Some(other),
                 allow_unsigned: false,
+                package_size: 0,
             },
             &mut recorder(&questions, true),
         )
@@ -865,6 +860,7 @@ mod tests {
             &TrustInputs {
                 trust_key: None,
                 allow_unsigned: true,
+                package_size: 0,
             },
             &mut recorder(&questions, true),
         )
@@ -886,6 +882,7 @@ mod tests {
             &TrustInputs {
                 trust_key: None,
                 allow_unsigned: true,
+                package_size: 0,
             },
             &mut recorder(&questions, true),
         )
@@ -909,7 +906,8 @@ mod tests {
         assert_eq!(
             *questions.borrow(),
             vec![TrustQuestion::Unsigned {
-                archive_digest: "digest".to_owned()
+                archive_digest: "digest".to_owned(),
+                size_bytes: 0,
             }]
         );
         assert_eq!(load(folder.path(), ID).unwrap(), None);
@@ -969,30 +967,20 @@ mod tests {
         assert_eq!(outcome, TrustOutcome::Pinned(fp(&key)));
     }
 
-    #[cfg(feature = "e2e")]
     #[test]
-    fn the_scripted_trust_answer_is_read_only_in_an_end_to_end_run() {
-        fn pairs(
-            table: &'static [(&'static str, &'static str)],
-        ) -> impl Fn(&str) -> Option<String> {
-            move |name| {
-                table
-                    .iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            }
-        }
-        let silent = pairs(&[(TRUST_VARIABLE, "accept")]);
-        assert_eq!(scripted_answer(&silent).unwrap(), None);
-        let off = pairs(&[("ALEF_E2E", "0"), (TRUST_VARIABLE, "accept")]);
-        assert_eq!(scripted_answer(&off).unwrap(), None);
-        let accept = pairs(&[("ALEF_E2E", "1"), (TRUST_VARIABLE, "accept")]);
-        assert_eq!(scripted_answer(&accept).unwrap(), Some(true));
-        let refuse = pairs(&[("ALEF_E2E", "1"), (TRUST_VARIABLE, "refuse")]);
-        assert_eq!(scripted_answer(&refuse).unwrap(), Some(false));
-        let nothing = pairs(&[("ALEF_E2E", "1")]);
-        assert_eq!(scripted_answer(&nothing).unwrap(), None);
-        let other = pairs(&[("ALEF_E2E", "1"), (TRUST_VARIABLE, "maybe")]);
-        assert!(scripted_answer(&other).is_err());
+    fn the_first_launch_prints_the_size_once_and_only_without_an_ask() {
+        let line = first_launch_line(false, true, 149_200_000).expect("a one-time line");
+        assert!(line.contains("Package size:"), "{line}");
+        assert!(line.contains("142.3 MB"), "{line}");
+        assert_eq!(
+            first_launch_line(false, true, 0).unwrap(),
+            "alef: Package size: 0 B (0 bytes)"
+        );
+        assert_eq!(
+            first_launch_line(true, true, 1),
+            None,
+            "the ask already showed it"
+        );
+        assert_eq!(first_launch_line(false, false, 1), None, "no first launch");
     }
 }

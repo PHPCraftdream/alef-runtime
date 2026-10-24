@@ -154,8 +154,21 @@
         "service",
         "launch-modes",
         "package",
+        "no-extract",
         "updater"
       ]
+    },
+    {
+      "glob": "backend/crates/alef/src/application/**",
+      "scenarios": ["package", "no-extract"]
+    },
+    {
+      "glob": "backend/crates/alef-runtime/src/bridge/assets/**",
+      "scenarios": ["package", "no-extract"]
+    },
+    {
+      "glob": "backend/crates/alef-package/**",
+      "scenarios": ["package", "no-extract"]
     },
     {
       "glob": "tests/e2e/scenarios/app/devflow.mjs",

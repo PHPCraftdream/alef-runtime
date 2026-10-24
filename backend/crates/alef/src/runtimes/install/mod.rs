@@ -65,15 +65,17 @@ pub async fn install(
     let id = prepared.manifest.id.clone();
     let home = runtime_home();
     let mut integration = integration::NativeIntegration::new();
+    let inputs = TrustInputs {
+        trust_key,
+        allow_unsigned,
+        package_size: prepared.size_bytes,
+    };
     let outcome = flow::install_in(
         &home,
         &executable,
         prepared,
         bytes,
-        &TrustInputs {
-            trust_key,
-            allow_unsigned,
-        },
+        &inputs,
         &crate::application::trust::asker_from_environment()
             .map_err(|e| InstallError::new("INVALID_ARGUMENT", e, 2))?,
         &mut integration,
@@ -641,6 +643,7 @@ impl alef_modules::net::updater::UpdateApplier for StoreApplier {
             let trust = crate::application::trust::TrustInputs {
                 trust_key: Some(self.fingerprint.clone()),
                 allow_unsigned: false,
+                package_size: bytes.len() as u64,
             };
             let runtime = tokio::runtime::Handle::current();
             let outcome = tokio::task::spawn_blocking(move || {

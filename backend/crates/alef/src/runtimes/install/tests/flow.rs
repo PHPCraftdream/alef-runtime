@@ -138,6 +138,7 @@ async fn perform(
         TrustInputs {
             trust_key: Some(key.into()),
             allow_unsigned: false,
+            package_size: 0,
         },
         fake,
     )
@@ -198,6 +199,7 @@ async fn unsigned_install_and_empty_name_use_id_for_record_and_artifact() {
             TrustInputs {
                 trust_key: None,
                 allow_unsigned: true,
+                package_size: 0,
             },
             &mut fake,
         )
@@ -328,6 +330,7 @@ async fn unsigned_update_requires_signature_even_with_allow_unsigned() {
                 TrustInputs {
                     trust_key: None,
                     allow_unsigned: true,
+                    package_size: 0,
                 },
                 &mut fake,
             )

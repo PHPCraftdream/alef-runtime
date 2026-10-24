@@ -55,7 +55,7 @@ test('the_macos_step_block_pins_the_condition_bound_and_command', () => {
   const block = ciYml.match(/- name: e2e \(alef on Servo, macOS[\s\S]*?(?=\n      - name: )/)?.[0];
   assert.ok(block !== undefined, 'macOS e2e step not found');
   assert.ok(block.includes("if: runner.os == 'macOS' && needs.plan.outputs.e2e != 'none'"));
-  assert.ok(block.includes('timeout-minutes: 180'));
+  assert.ok(block.includes('timeout-minutes: 185'));
   assert.ok(block.includes('shell: bash'));
   assert.ok(block.includes('run: node scripts/ci/e2e/os.mjs --plan "${{ needs.plan.outputs.e2e }}" --exe backend/target/debug/alef --timeout-s 150'));
 });

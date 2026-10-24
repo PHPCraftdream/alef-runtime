@@ -29,6 +29,14 @@ function element(tag, props = {}, ...children) {
   return node;
 }
 
+function sizeLine(bytes) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes; let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+  const shown = unit === 0 ? String(value) : value.toFixed(1);
+  return `Package size: ${shown} ${units[unit]} (${new Intl.NumberFormat('en-US').format(bytes)} bytes)`;
+}
+
 function render(request) {
   const root = document.getElementById('root');
   root.replaceChildren();
@@ -44,6 +52,9 @@ function render(request) {
   );
 
   if (trust.fingerprint !== undefined) {
+    if (trust.size_bytes !== undefined) {
+      root.append(element('p', { class: 'sub', text: sizeLine(trust.size_bytes) }));
+    }
     root.append(
       element('section', { class: 'signed' },
         element('h2', { text: 'Signed' }),
@@ -54,6 +65,9 @@ function render(request) {
       ),
     );
   } else {
+    if (trust.size_bytes !== undefined) {
+      root.append(element('p', { class: 'sub', text: sizeLine(trust.size_bytes) }));
+    }
     root.append(
       element('section', { class: 'unsigned' },
         element('h2', { text: '⚠ Not signed' }),

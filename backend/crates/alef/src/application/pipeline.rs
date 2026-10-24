@@ -226,6 +226,7 @@ mod tests {
             TrustInputs {
                 trust_key: None,
                 allow_unsigned: false,
+                package_size: 0,
             },
         );
         let decisions = FileConsentStore::new(dir.path().join("consent"));
@@ -270,6 +271,7 @@ mod tests {
             TrustInputs {
                 trust_key: None,
                 allow_unsigned: false,
+                package_size: 0,
             },
         );
         let decisions = FileConsentStore::new(dir.path().join("consent"));
@@ -307,6 +309,7 @@ mod tests {
             TrustInputs {
                 trust_key: None,
                 allow_unsigned: true,
+                package_size: 0,
             },
         );
         let decisions = FileConsentStore::new(dir.path().join("consent"));
@@ -340,6 +343,7 @@ mod tests {
             TrustInputs {
                 trust_key: None,
                 allow_unsigned: false,
+                package_size: 0,
             },
         );
         let decisions = FileConsentStore::new(dir.path().join("consent"));
@@ -433,6 +437,7 @@ mod tests {
             TrustInputs {
                 trust_key: None,
                 allow_unsigned: true,
+                package_size: 0,
             },
         );
         let decisions = FileConsentStore::new(dir.path().join("consent"));
