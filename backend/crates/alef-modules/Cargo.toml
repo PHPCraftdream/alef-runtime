@@ -17,7 +17,7 @@ global-hotkey = "=0.8.0"
 bytes = "=1.12.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
-tokio = { version = "=1.53.1", features = ["rt", "sync", "time", "net", "io-util", "io-std", "fs", "process"] }
+tokio = { version = "=1.53.3", features = ["rt", "sync", "time", "net", "io-util", "io-std", "fs", "process"] }
 ts-rs = { version = "=12.0.1", features = ["serde-json-impl", "no-serde-warnings"] }
 gethostname = "=1.1.0"
 sys-locale = "=0.3.2"
@@ -79,4 +79,4 @@ muda = { version = "=0.19.3", default-features = false }
 [dev-dependencies]
 tempfile = "=3.27.0"
 hyper = { version = "=1.11.1", default-features = false, features = ["server", "http1"] }
-tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "test-util"] }
+tokio = { version = "=1.53.3", features = ["rt-multi-thread", "macros", "test-util"] }

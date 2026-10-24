@@ -28,7 +28,7 @@ alef-package = { path = "../alef-package" }
 alef-runtime = { path = "../alef-runtime" }
 crossbeam-channel = "=0.5.17"
 sha2 = "=0.10.9"
-tokio = { version = "=1.53.1", features = ["rt-multi-thread", "fs", "macros", "time", "signal", "sync"] }
+tokio = { version = "=1.53.3", features = ["rt-multi-thread", "fs", "macros", "time", "signal", "sync"] }
 url = "=2.5.8"
 rustls = "=0.23.46"
 surfman = "=0.13.0"
