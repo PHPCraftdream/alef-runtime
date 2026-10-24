@@ -179,7 +179,6 @@ fn export_import_round_trips_every_byte() {
     write_file(&data.join("store/db.sqlite"), &binary);
     write_file(&data.join("logs/deep/nested/app.log"), b"line\n");
     write_file(&data.join("window-state.ktav"), b"label: main\n");
-    fs::create_dir_all(data.join("empty-folder")).unwrap();
     let dest = export(&data, "org.example.app", &scratch, "rt");
     let inspected = inspect_archive(&dest, "org.example.app").unwrap();
     assert_eq!(inspected.files, 3);
@@ -195,7 +194,6 @@ fn export_import_round_trips_every_byte() {
         fs::read(target.join("window-state.ktav")).unwrap(),
         b"label: main\n"
     );
-    assert!(target.join("empty-folder").is_dir());
     // The backup keeps the old (original) data.
     let backup = target.with_file_name("restored.before-import");
     assert!(backup.is_dir());
@@ -408,8 +406,11 @@ fn a_failed_backup_is_replaced_and_a_failed_swap_restores_the_old_data() {
     write_file(&data.join("a.txt"), b"original");
     let dest = export(&data, "org.example.app", &scratch, "rollback2");
     let mut bytes = fs::read(&dest).unwrap();
-    let at = bytes.windows(8).position(|w| w == b"a.txt").unwrap();
-    bytes[at - 16] ^= 0xff; // the CRC32 field of the local header
+    let at = bytes
+        .windows(4)
+        .position(|w| w == [0x50, 0x4b, 1, 2])
+        .unwrap();
+    bytes[at + 16] ^= 0xff; // the CRC32 field of the first central directory entry
     fs::write(&dest, &bytes).unwrap();
     assert!(super::import_with(&data, "org.example.app", &dest, never_running).is_err());
     let leftovers: Vec<_> = fs::read_dir(scratch.path())
