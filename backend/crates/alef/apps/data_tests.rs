@@ -307,9 +307,15 @@ fn import_rejects_every_unsafe_entry_path() {
     // A second entry named like the manifest collides.
     let dest = scratch.path().join("self.zip");
     let manifest = manifest_bytes("org.example.app", vec![entry(MANIFEST_NAME, 1, "aa")]);
-    build_archive(&dest, MANIFEST_NAME, b"x", manifest);
+    build_archive(&dest, "x.txt", b"x", manifest);
     let error = import_never_running(&target, &dest).unwrap_err();
     assert!(error.contains("lists itself"), "error: {error}");
+    // Two entries named like the manifest are refused before either is read.
+    let dest = scratch.path().join("twin.zip");
+    let manifest = manifest_bytes("org.example.app", vec![entry("x.txt", 1, "aa")]);
+    build_archive(&dest, MANIFEST_NAME, b"x", manifest);
+    let error = import_never_running(&target, &dest).unwrap_err();
+    assert!(error.contains("duplicate"), "error: {error}");
 }
 
 #[test]
@@ -459,8 +465,9 @@ fn zip_round_trips_and_rejects_truncation() {
     }
     // One flipped byte in the stored CRC of a payload breaks the checksum.
     let mut flipped = bytes.clone();
-    let at = flipped.windows(8).position(|w| w == b"text.txt").unwrap();
-    flipped[at - 16] ^= 0xff;
+    // The central directory comes last: its entry names the file for the second time.
+    let at = flipped.windows(8).rposition(|w| w == b"text.txt").unwrap();
+    flipped[at - 30] ^= 0xff; // the CRC32 field of that central entry
     let parsed = crate::apps::zip::ZipArchive::parse(&flipped).unwrap();
     assert!(parsed.read(&flipped, "text.txt", 1024).is_err());
     // A truncated EOCD (bad comment length) is rejected.

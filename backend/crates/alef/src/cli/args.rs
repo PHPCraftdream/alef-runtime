@@ -244,10 +244,17 @@ fn apps_archive(
     arguments: &mut impl Iterator<Item = OsString>,
     verb: &str,
 ) -> Result<PathBuf, String> {
-    arguments
+    let archive = arguments
         .next()
-        .map(PathBuf::from)
-        .ok_or_else(|| format!("apps {verb}: <FILE.zip> is required"))
+        .ok_or_else(|| format!("apps {verb}: <FILE.zip> is required"))?;
+    // A flag is not a file name (use ./--name.zip for such a file).
+    if archive.to_string_lossy().starts_with("--") {
+        return Err(format!(
+            "apps {verb}: unknown option {}",
+            archive.to_string_lossy()
+        ));
+    }
+    Ok(PathBuf::from(archive))
 }
 
 fn dev_url(text: &str) -> Result<Url, String> {
@@ -436,10 +443,15 @@ fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<Command, St
                 Some(s) if s == "--json" => Command::Apps { json: true },
                 Some(s) if s == "--ui" => Command::AppsUi,
                 Some(s) if s == "export" => {
-                    return Ok(Command::AppsExport {
-                        app: apps_app(&mut args, "export")?,
-                        archive: apps_archive(&mut args, "export")?,
-                    })
+                    let app = apps_app(&mut args, "export")?;
+                    let archive = apps_archive(&mut args, "export")?;
+                    if let Some(extra) = args.next() {
+                        return Err(format!(
+                            "apps export: unexpected argument {}",
+                            extra.to_string_lossy()
+                        ));
+                    }
+                    return Ok(Command::AppsExport { app, archive });
                 }
                 Some(s) if s == "import" => {
                     let app = apps_app(&mut args, "import")?;

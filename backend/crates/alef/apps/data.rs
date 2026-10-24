@@ -190,6 +190,14 @@ fn inspect_bytes(bytes: &[u8], app_id: &str) -> Result<DataStats, String> {
     let mut data_files = 0u64;
     let mut total = 0u64;
     let mut manifest: Option<Manifest> = None;
+    if parsed
+        .entries()
+        .filter(|entry| entry.name == MANIFEST_NAME)
+        .count()
+        > 1
+    {
+        return Err(format!("duplicate archive entry {MANIFEST_NAME}"));
+    }
     for entry in parsed.entries() {
         if entry.is_dir() {
             continue;
@@ -233,16 +241,27 @@ fn inspect_bytes(bytes: &[u8], app_id: &str) -> Result<DataStats, String> {
     if manifest.files.len() > MAX_FILES {
         return Err(format!("the archive holds more than {MAX_FILES} files"));
     }
+    let mut listed = HashSet::new();
     let mut listed_total = 0u64;
     for file in &manifest.files {
         check_path(&file.path)?;
         if file.path == MANIFEST_NAME {
             return Err("the manifest lists itself".into());
         }
-        if !paths.insert(file.path.to_lowercase()) {
+        let key = file.path.to_lowercase();
+        if !listed.insert(key.clone()) {
             return Err(format!("duplicate archive entry {}", file.path));
         }
+        if !paths.contains(&key) {
+            return Err(format!(
+                "the manifest lists {} which the archive lacks",
+                file.path
+            ));
+        }
         listed_total += file.size;
+    }
+    if listed.len() != paths.len() {
+        return Err("the archive holds files that the manifest does not list".into());
     }
     if listed_total > MAX_TOTAL {
         return Err("the archive expands above 64 GiB (archive bomb?)".into());
