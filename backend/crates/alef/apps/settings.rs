@@ -95,6 +95,10 @@ pub fn settings_set_line(code: &str) -> Result<String, String> {
 }
 
 fn install(registry: &mut Registry, host: Arc<dyn Host>) -> Result<(), AlefError> {
+    alef_launch::singleton::on_raise({
+        let host = host.clone();
+        Arc::new(move || host.focus())
+    });
     install_commands(registry, host)?;
     #[cfg(feature = "e2e")]
     install_automation(registry)?;
@@ -142,6 +146,11 @@ fn install_automation(registry: &mut Registry) -> Result<(), AlefError> {
 }
 
 pub async fn run(icon: Vec<u8>) -> Result<(), String> {
+    // Singleton gate: `None` = an existing window was raised; exit 0.
+    let _singleton = match alef_launch::singleton::enter(alef_launch::singleton::Kind::Settings) {
+        Some(guard) => guard,
+        None => return Ok(()),
+    };
     let pages = alef_launch::consent::ask::exchange_folder()
         .join(format!("{}-settings-page", std::process::id()));
     fs::create_dir_all(&pages).map_err(|error| format!("the page cannot be put down: {error}"))?;

@@ -52,6 +52,7 @@
     "backend/crates/alef-modules/src/system/**",
     "backend/crates/alef-modules/src/desktop/**",
     "backend/crates/alef-runtime/src/ui/**",
+    "backend/crates/alef/ui/**",
     "backend/crates/alef-runtime/src/bridge/**",
     "backend/crates/alef-runtime/src/window/**",
     "backend/crates/alef/src/relaunch/**",
@@ -414,6 +415,10 @@
       "scenarios": [
         "media"
       ]
+    },
+    {
+      "glob": "tests/e2e/apps/consent/window-singleton.mjs",
+      "scenarios": ["window-singleton"]
     }
   ]
 }

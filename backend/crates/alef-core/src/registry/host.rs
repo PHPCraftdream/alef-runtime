@@ -33,6 +33,9 @@ pub trait Host: Send + Sync {
     }
     /// The current desktop theme; `Light` when the platform does not report one.
     fn theme(&self) -> Theme;
+    /// Raises the window to the front (singleton re-launch); a no-op where
+    /// the host cannot focus windows.
+    fn focus(&self) {}
     /// Runs `call` on the thread that owns the windows. `caller` is the window of the calling
     /// document (0 when there is none); the reply is the JSON the command returns.
     fn ui(&self, caller: u64, call: UiCall) -> HostFuture;
