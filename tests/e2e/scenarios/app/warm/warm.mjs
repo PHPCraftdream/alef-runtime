@@ -237,7 +237,16 @@ export function warmScenarios({ exe, verbose, timeoutMs }) {
           const after = replacement.status?.broker?.granted_total;
           const ok = replacement.ok && after === before;
           console.log(`    ${ok ? 'ok  ' : 'FAIL'} spare replaced while idle: slot=${slotState(replacement.status ?? {}, 'windowed')}, granted ${before} -> ${after}`);
-          if (!ok) problems.push(`the pool did not recover a ready windowed spare, or granted_total moved while idle (${before} -> ${after})`);
+          if (!ok) {
+            problems.push(`the pool did not recover a ready windowed spare, or granted_total moved while idle (${before} -> ${after})`);
+            console.log(`    status: ${JSON.stringify(replacement.status?.broker ?? null)}`);
+            if (process.platform === 'win32') {
+              // What the stuck replacement is doing: its command line, age and whether its window thread answers.
+              const script = "Get-CimInstance Win32_Process -Filter \"Name like 'alef%'\" | Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine | Format-List | Out-String; Get-Process -Name alef* | Select-Object Id,CPU,Responding,@{n='Threads';e={$_.Threads.Count}},@{n='MB';e={[int]($_.WorkingSet64/1MB)}} | Format-Table | Out-String";
+              const run = spawnSync('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf8', timeout: 30000 });
+              console.log(`${run.stdout ?? ''}${run.stderr ?? ''}`.split(/\r?\n/).map(line => `      | ${line}`).join('\n'));
+            }
+          }
         }
 
         // -- 5. a console application declines to the cold path, exactly once -------------------
