@@ -48,6 +48,8 @@ struct SetArgs {
     #[serde(default)]
     confirm_red: bool,
 }
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PickArgs {
     identity: Identity,
 }
