@@ -279,11 +279,14 @@ fn install_commands(
         })?;
     registry
         .register_runtime::<IdentityArgs>("runtime.apps.reset")?
-        .handler(move |_, args| {
+        .handler({
             let home = home.clone();
-            async move {
-                let saved = reset(&home, &store(&home), &args.identity)?;
-                Ok(Reply::Json(saved))
+            move |_, args| {
+                let home = home.clone();
+                async move {
+                    let saved = reset(&home, &store(&home), &args.identity)?;
+                    Ok(Reply::Json(saved))
+                }
             }
         })?;
     registry
