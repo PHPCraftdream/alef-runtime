@@ -6,7 +6,8 @@
 //! API: `BrokerTray::new(config)` decodes the PNG and validates it, `handle()`
 //! gives a `Clone + Send` handle whose `exit()` stops the tray from another
 //! thread, and `run(self)` blocks the calling thread until `exit()` or failure.
-//! The two fixed menu items surface as `BrokerTrayCommand`s on
+//! The fixed menu — Apps, Settings, a separator, Quit, with English labels by
+//! default — surfaces as `BrokerTrayCommand`s on
 //! `BrokerTrayConfig::commands` (a crossbeam sender, like the existing tray
 //! worker). Without a tray backend (`run` on Linux without a session bus or a
 //! StatusNotifierWatcher host) the call fails immediately with
@@ -31,9 +32,11 @@ use std::{
 /// A command chosen in the broker tray menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrokerTrayCommand {
-    /// «Список приложений»: the broker opens its trusted application list.
+    /// «Apps»: the broker opens its trusted application list.
     ShowApps,
-    /// «Выход»: the broker stops; running applications keep working.
+    /// «Settings»: the broker opens its settings window.
+    ShowSettings,
+    /// «Quit»: the broker stops; running applications keep working.
     Quit,
 }
 
@@ -42,18 +45,20 @@ pub(crate) struct Prepared {
     icon: Icon,
     tooltip: String,
     show_apps_label: String,
+    show_settings_label: String,
     quit_label: String,
     commands: Sender<BrokerTrayCommand>,
 }
 
-/// Configuration of the broker tray icon. The defaults carry the Russian menu
-/// labels required by the M11 document; `commands` in the default config is
-/// disconnected, so unmapped tray clicks are simply dropped.
+/// Configuration of the broker tray icon. The menu labels default to English
+/// (Apps, Settings, Quit); `commands` in the default config is disconnected,
+/// so unmapped tray clicks are simply dropped.
 pub struct BrokerTrayConfig {
     /// PNG bytes of the icon (1..256 KiB, sides 1..256, as `tray_pure::decode`).
     pub icon_png: Vec<u8>,
     pub tooltip: String,
     pub show_apps_label: String,
+    pub show_settings_label: String,
     pub quit_label: String,
     /// Where chosen menu items are delivered. Send failures are ignored.
     pub commands: Sender<BrokerTrayCommand>,
@@ -67,6 +72,7 @@ impl Default for BrokerTrayConfig {
             icon_png: Vec::new(),
             tooltip: pure::DEFAULT_TOOLTIP.to_owned(),
             show_apps_label: pure::DEFAULT_SHOW_APPS.to_owned(),
+            show_settings_label: pure::DEFAULT_SHOW_SETTINGS.to_owned(),
             quit_label: pure::DEFAULT_QUIT.to_owned(),
             commands,
         }
@@ -127,6 +133,7 @@ impl BrokerTray {
                 icon,
                 tooltip: config.tooltip,
                 show_apps_label: config.show_apps_label,
+                show_settings_label: config.show_settings_label,
                 quit_label: config.quit_label,
                 commands: config.commands,
             },
@@ -171,12 +178,13 @@ mod tests {
     }
 
     #[test]
-    fn defaults_carry_russian_labels_and_disconnected_sender() {
+    fn defaults_carry_english_labels_and_disconnected_sender() {
         let config = BrokerTrayConfig::default();
         assert!(config.icon_png.is_empty());
         assert_eq!(config.tooltip, "Alef Broker");
-        assert_eq!(config.show_apps_label, "Список приложений");
-        assert_eq!(config.quit_label, "Выход");
+        assert_eq!(config.show_apps_label, "Apps");
+        assert_eq!(config.show_settings_label, "Settings");
+        assert_eq!(config.quit_label, "Quit");
         // Disconnected on purpose: the send below must not block or panic.
         assert!(config.commands.send(BrokerTrayCommand::Quit).is_err());
     }

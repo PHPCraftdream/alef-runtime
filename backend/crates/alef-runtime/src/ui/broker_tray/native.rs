@@ -84,14 +84,22 @@ fn icon(prepared: &Prepared) -> io::Result<tray_icon::Icon> {
 }
 
 fn menu(prepared: &Prepared) -> io::Result<muda::Menu> {
-    let items: Vec<muda::MenuItem> = pure::entries(&prepared.show_apps_label, &prepared.quit_label)
-        .iter()
-        .map(|entry| muda::MenuItem::with_id(entry.id, &entry.label, true, None))
-        .collect();
-    let references: Vec<&dyn muda::IsMenuItem> = items
-        .iter()
-        .map(|item| item as &dyn muda::IsMenuItem)
-        .collect();
+    let items: Vec<muda::MenuItem> = pure::entries(
+        &prepared.show_apps_label,
+        &prepared.show_settings_label,
+        &prepared.quit_label,
+    )
+    .iter()
+    .map(|entry| muda::MenuItem::with_id(entry.id, &entry.label, true, None))
+    .collect();
+    // Apps, Settings, then one separator before Quit.
+    let separator = muda::PredefinedMenuItem::separator();
+    let references: Vec<&dyn muda::IsMenuItem> = vec![
+        &items[0] as &dyn muda::IsMenuItem,
+        &items[1] as &dyn muda::IsMenuItem,
+        &separator,
+        &items[2] as &dyn muda::IsMenuItem,
+    ];
     muda::Menu::with_items(&references).map_err(io::Error::other)
 }
 

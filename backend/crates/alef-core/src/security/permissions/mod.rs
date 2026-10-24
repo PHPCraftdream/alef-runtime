@@ -3,6 +3,7 @@
 //! per-session grants.
 #[path = "../given/builtin.rs"]
 mod builtin;
+pub mod language;
 pub mod store;
 
 use super::{
