@@ -22,7 +22,7 @@ use alef_broker::ipc::{
     token::{load_existing_token, load_or_create_token},
     Client, Endpoint, Handler, ReplyTo, Server,
 };
-use alef_broker::protocol::message::{Hello, PROTOCOL_VERSION};
+use alef_broker::protocol::message::{ClientMsg, Hello, PROTOCOL_VERSION};
 
 /// Practical Unix socket path limit (`sun_path`, with a safety margin).
 const MAX_SOCKET_PATH: usize = 100;
@@ -299,6 +299,9 @@ struct RaiseHandler {
 }
 
 impl Handler for RaiseHandler {
+    // Only raw raise frames are spoken here; a launcher message is not expected and is dropped.
+    fn on_message(&self, _conn: &mut dyn ReplyTo, _msg: ClientMsg) {}
+
     fn on_raw_frame(&self, conn: &mut dyn ReplyTo, _conn_id: u64, body: &[u8]) -> io::Result<()> {
         if decode_raise(body).is_none() {
             return Err(io::Error::new(
