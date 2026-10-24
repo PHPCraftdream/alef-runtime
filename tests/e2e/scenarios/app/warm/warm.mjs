@@ -65,7 +65,7 @@ function table(rows) {
   const cell = (row, column) => String(typeof row[column] === 'number' ? Number(row[column].toFixed(1)) : row[column]);
   const width = column => Math.max(...[header[column], ...rows.map(row => cell(row, header[column]))].map(text => text.length));
   const line = row => `| ${header.map((name, column) => cell(row, name).padEnd(width(column))).join(' | ')} |`;
-  return [line(header), `| ${header.map((_, column) => '-'.repeat(width(column))).join(' | ')} |`, ...rows.map(line)].join('\n');
+  return [line(Object.fromEntries(header.map(name => [name, name]))), `| ${header.map((_, column) => '-'.repeat(width(column))).join(' | ')} |`, ...rows.map(line)].join('\n');
 }
 
 /** Markdown block for $GITHUB_STEP_SUMMARY in the shape of startup.mjs's summaryMarkdown. */
