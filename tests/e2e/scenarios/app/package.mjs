@@ -690,7 +690,7 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
             }))
           : {};
         // The site mirrors buildSite of the `package` scenario, with its own key home only.
-        const key = await createKey('a', { home: keyHome });
+        await createKey('a', { home: keyHome });
         const api = transpileApi();
         const publicRoot = join(dir, 'site', 'dist');
         mkdirSync(publicRoot, { recursive: true });

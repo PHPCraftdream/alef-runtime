@@ -87,7 +87,7 @@ fn artifact(record: &AppRecord, dir: &Path, executable: &Path) -> Artifact {
     }
 }
 fn stored_package_bytes(path: &Path) -> Result<Option<Vec<u8>>, InstallError> {
-    let file = match std::fs::File::open(path) {
+    let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(io_error(e)),

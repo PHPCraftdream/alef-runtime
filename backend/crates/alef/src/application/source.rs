@@ -201,7 +201,7 @@ fn prepare_snapshot(
     runtime_store: &Path,
     check_runtime: bool,
 ) -> Result<(Prepared, Option<Vec<u8>>), LoadFailure> {
-    let file = std::fs::File::open(path).map_err(io_failure)?;
+    let mut file = std::fs::File::open(path).map_err(io_failure)?;
     let meta = file.metadata().map_err(io_failure)?;
     if !meta.is_file() {
         return Err(not_a_package(path));
