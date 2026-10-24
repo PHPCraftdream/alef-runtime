@@ -23,7 +23,7 @@ const RATIO: u64 = 1000;
 const RATIO_FLOOR: u64 = 10 << 20;
 
 /// What an export archived or an import replaced.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DataStats {
     pub files: u64,
     pub bytes: u64,

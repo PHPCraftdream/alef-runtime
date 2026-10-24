@@ -94,7 +94,7 @@ const ERROR_PIPE_BUSY: i32 = 231;
 impl Endpoint {
     /// `Ok(true)` when a live peer holds the endpoint.
     fn held(&self) -> std::io::Result<bool> {
-        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let path = platform::socket(self);
         std::fs::DirBuilder::new()
             .recursive(true)
