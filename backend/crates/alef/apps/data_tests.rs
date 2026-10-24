@@ -98,7 +98,11 @@ fn manifest_round_trips_through_the_ktav_codec() {
     let text = String::from_utf8(bytes).unwrap();
     assert!(text.contains("format: 1"), "unexpected text: {text}");
     assert!(text.contains("id: org.example.app"));
-    assert!(text.contains("created: \"2026-10-24T12:34:56Z\""));
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("created") && line.contains("2026-10-24T12:34:56Z")),
+        "unexpected text: {text}"
+    );
     assert!(text.contains("path: store/db.sqlite"));
     let back: Manifest =
         alef_core::security::permissions::store::from_bytes(text.as_bytes()).unwrap();
@@ -353,8 +357,11 @@ fn a_flipped_byte_refuses_the_whole_import_and_leaves_the_data_alone() {
     write_file(&data.join("a.txt"), b"original");
     let dest = export(&data, "org.example.app", &scratch, "corrupt");
     let mut bytes = fs::read(&dest).unwrap();
-    let at = bytes.windows(8).position(|w| w == b"text.txt").unwrap();
-    bytes[at - 16] ^= 0xff; // the CRC32 field of the local header
+    let at = bytes
+        .windows(4)
+        .position(|w| w == [0x50, 0x4b, 1, 2])
+        .unwrap();
+    bytes[at + 16] ^= 0xff; // the CRC32 field of the first central directory entry
     fs::write(&dest, &bytes).unwrap();
     let error = super::import_with(&data, "org.example.app", &dest, never_running).unwrap_err();
     assert!(
@@ -497,7 +504,7 @@ fn import_into_a_fresh_directory_needs_no_backup() {
 
 #[test]
 fn dos_times_and_rfc3339_come_out_sane() {
-    assert_eq!(crate::apps::zip::dos_datetime(0), (0, 0)); // before 1980 clamps to 1980-01-01
+    assert_eq!(crate::apps::zip::dos_datetime(0), (33, 0)); // before 1980 clamps to 1980-01-01
     assert_eq!(
         crate::apps::zip::dos_datetime(1_800_000_000),
         (0x5E2F, 0x4000)

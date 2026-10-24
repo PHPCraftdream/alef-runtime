@@ -79,7 +79,7 @@ impl ZipArchive {
             let sizes = (
                 u32le(bytes, cursor + 20),
                 u32le(bytes, cursor + 24),
-                u32le(bytes, cursor + 28),
+                u32le(bytes, cursor + 42),
             );
             if sizes.0 == u32::MAX || sizes.1 == u32::MAX || sizes.2 == u32::MAX {
                 return Err(unsupported("zip64 (entries above 4 GiB)"));
