@@ -10,5 +10,5 @@ mod spawner;
 #[cfg(test)]
 mod tests;
 
-pub use broker::Broker;
+pub use broker::{Broker, DebugSink};
 pub use spawner::{ExitInfo, ProcessSpawner, SpareId, SpareProcess, Spawner};

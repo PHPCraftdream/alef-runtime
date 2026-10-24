@@ -77,13 +77,23 @@ pub(crate) async fn run_spare(
     let outcome = shared.lock().expect("spare outcome").take();
     // The worker's runtime must live to the end: the finish (bridge
     // shutdown, the signal task) uses its handle.
-    let _worker_runtime = runtime_slot.lock().expect("spare runtime").take();
-    match outcome {
-        Some(SpareOutcome::App(finish)) => app_run::finish_app(finish, loop_result).await,
+    let worker_runtime = runtime_slot.lock().expect("spare runtime").take();
+    let result = match outcome {
+        Some(SpareOutcome::App(mut finish)) => {
+            // The loop hands the bridge back: it is shut down as on the cold path.
+            let result = loop_result.map(|bridge| finish.bridge = bridge);
+            app_run::finish_app(finish, result).await
+        }
         Some(SpareOutcome::Exit(code)) => Ok(code),
         // Declined or shut down before anything ran: a quiet exit.
         None => Ok(0),
+    };
+    // A runtime must not be dropped inside async code (tokio panics): a plain thread drops it,
+    // unjoined (its blocking tasks must not hold the exit).
+    if let Some(runtime) = worker_runtime {
+        std::thread::spawn(move || drop(runtime));
     }
+    result
 }
 
 /// Why the assignment did not become an application.
@@ -176,6 +186,12 @@ fn run_assigned(
             ))
         }
     };
+    // The client's context exactly, before anything reads it: the cwd and
+    // the full environment (absent variables are removed).
+    env::set_cwd(launch.cwd.as_ref()).map_err(AssignFailure::Decline)?;
+    let current = env::ProcessEnv.vars();
+    env::apply(&current, &launch.env, &mut env::ProcessEnvTarget)
+        .map_err(AssignFailure::Decline)?;
     // An interactive permission prompt cannot happen here: no window exists
     // on this thread. The client runs cold and asks in its own process.
     if matches!(
@@ -187,12 +203,6 @@ fn run_assigned(
             "an interactive permission decision may be required".to_owned(),
         ));
     }
-    // The client's context exactly, before anything reads it: the cwd and
-    // the full environment (absent variables are removed).
-    env::set_cwd(launch.cwd.as_ref()).map_err(AssignFailure::Decline)?;
-    let current = env::ProcessEnv.vars();
-    env::apply(&current, &launch.env, &mut env::ProcessEnvTarget)
-        .map_err(AssignFailure::Decline)?;
     // This thread's runtime outlives the assignment: the finish on the main
     // thread uses its handle (Bridge and the signal task).
     let runtime = Arc::new(
@@ -229,8 +239,8 @@ fn run_assigned(
         ..
     } = prepared;
     *shared.lock().expect("spare outcome") = Some(SpareOutcome::App(AppFinish {
-        // The bridge moves into the event loop with the assignment; the
-        // finish on the main thread shuts nothing down.
+        // The bridge moves into the event loop with the assignment and comes back
+        // from `run_warm` for the finish.
         bridge: None,
         console,
         signal_task,
