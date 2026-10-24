@@ -569,4 +569,5 @@ fn remove_path(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[path = "data_tests.rs"]
 mod data_tests;
