@@ -21,7 +21,9 @@ alef runtime install <VERSION> <SOURCE_BINARY>\n\
 alef runtime prune [--keep <VERSION>]... [--dry-run]\n\
 alef install <PACKAGE> [--trust-key <KEY>] [--allow-unsigned]\n\
 alef uninstall <ID> [--purge-data]\n\
-alef apps [--json|--ui]\n\
+alef apps [--json|--ui]
+alef apps export <PATH|ID> <FILE.zip>
+alef apps import <PATH|ID> <FILE.zip> [--confirm-red] [--json]\n\
 alef broker [--no-tray]\n\
 alef warm status|start|stop|enable|disable [--json]\n\
 `run` and `--app` are the same launch: a directory runs as a development application,\n\
@@ -198,6 +200,18 @@ pub enum Command {
         json: bool,
     },
     AppsUi,
+    /// `alef apps export <PATH|ID> <FILE.zip>`: the data of one application as an archive.
+    AppsExport {
+        app: String,
+        archive: PathBuf,
+    },
+    /// `alef apps import <PATH|ID> <FILE.zip> [--confirm-red] [--json]`.
+    AppsImport {
+        app: String,
+        archive: PathBuf,
+        confirm_red: bool,
+        json: bool,
+    },
     /// `alef consent <REQUEST> <ANSWER>`, started by the launcher itself: the permission window.
     Consent {
         request: PathBuf,
@@ -215,6 +229,25 @@ fn value(arguments: &mut impl Iterator<Item = OsString>, flag: &str) -> Result<O
     arguments
         .next()
         .ok_or_else(|| format!("{flag} requires a value"))
+}
+
+/// The `<PATH|ID>` target of an apps data command: kept as text like permissions keeps its target.
+fn apps_app(arguments: &mut impl Iterator<Item = OsString>, verb: &str) -> Result<String, String> {
+    arguments
+        .next()
+        .ok_or_else(|| format!("apps {verb}: <PATH|ID> is required"))
+        .and_then(|s| text_of(s, "app"))
+}
+
+/// The archive file of an apps data command.
+fn apps_archive(
+    arguments: &mut impl Iterator<Item = OsString>,
+    verb: &str,
+) -> Result<PathBuf, String> {
+    arguments
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("apps {verb}: <FILE.zip> is required"))
 }
 
 fn dev_url(text: &str) -> Result<Url, String> {
@@ -398,16 +431,52 @@ fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<Command, St
             Command::Uninstall { id, purge_data }
         }
         "apps" => {
-            let mode = match args.next() {
+            let command = match args.next() {
                 None => Command::Apps { json: false },
                 Some(s) if s == "--json" => Command::Apps { json: true },
                 Some(s) if s == "--ui" => Command::AppsUi,
+                Some(s) if s == "export" => {
+                    return Ok(Command::AppsExport {
+                        app: apps_app(&mut args, "export")?,
+                        archive: apps_archive(&mut args, "export")?,
+                    })
+                }
+                Some(s) if s == "import" => {
+                    let app = apps_app(&mut args, "import")?;
+                    let archive = apps_archive(&mut args, "import")?;
+                    let mut confirm_red = false;
+                    let mut json = false;
+                    while let Some(s) = args.next() {
+                        match s.to_str() {
+                            Some("--confirm-red") if confirm_red => {
+                                return Err("apps import: --confirm-red given twice".into())
+                            }
+                            Some("--confirm-red") => confirm_red = true,
+                            Some("--json") if json => {
+                                return Err("apps import: --json given twice".into())
+                            }
+                            Some("--json") => json = true,
+                            _ => {
+                                return Err(format!(
+                                    "apps import: unknown argument {}",
+                                    s.to_string_lossy()
+                                ))
+                            }
+                        }
+                    }
+                    Command::AppsImport {
+                        app,
+                        archive,
+                        confirm_red,
+                        json,
+                    }
+                }
                 Some(s) => return Err(format!("apps: unknown argument {}", s.to_string_lossy())),
             };
             if args.next().is_some() {
                 return Err("apps: unexpected argument".into());
             }
-            return Ok(mode);
+            return Ok(command);
         }
         _ => return Err(format!("unknown install command {verb:?}")),
     };

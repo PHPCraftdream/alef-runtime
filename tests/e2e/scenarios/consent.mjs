@@ -2,7 +2,8 @@
 // Scenarios of consent and substitution (docs/stages/m2b-consent.md, "Приёмка"): what the application
 // finds when the user decided before the start, and what the launcher does with the decisions.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 
@@ -34,6 +35,21 @@ const ANSWERS = [
 const VARIABLES = { ALEF_E2E_ENV_ALLOWED: 'yes', ALEF_E2E_ENV_SUBSTITUTED: 'really-set', ALEF_E2E_ENV_DENIED: 'secret-31337' };
 
 const linesOf = text => text.split('\n').filter(Boolean);
+
+/** One hash of a whole folder: the sorted paths and the bytes and sizes of their files. */
+const dirHash = root => {
+  const digest = createHash('sha256');
+  const walk = prefix => {
+    for (const entry of readdirSync(join(root, prefix), { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : 1)) {
+      const relative = `${prefix}${entry.name}`;
+      if (entry.isDirectory()) { walk(`${relative}/`); continue; }
+      const bytes = readFileSync(join(root, relative));
+      digest.update(`${relative}:${bytes.length}:`); digest.update(bytes);
+    }
+  };
+  walk('');
+  return digest.digest('hex');
+};
 
 /** The same file whatever the spelling: links resolved, and the case of Windows ignored. */
 const real = path => {
@@ -432,6 +448,209 @@ export function appsUiScenarios({ exe, verbose }) {
         }
       } catch (error) { problems.push(error.message); }
       finally { running?.stop(); rmSync(directory, { recursive: true, force: true }); }
+      return { problems, lines: [] };
+    },
+  };
+}
+
+// The data of an application (`alef apps export`/`import` and the buttons of the manager window):
+// an archive of the data folder, the red confirmation before it replaces anything, a refusal while
+// the application runs, and the refusal of an archive that lies about its paths.
+const DATA_ID = 'org.alef.e2e.modules.store';
+const DATA_APP = 'modules/data/store'; // the store fixture: its run writes the `store` file of the data folder
+
+/** CRC-32 (the zip polynomial) of a buffer. */
+const crc32 = bytes => {
+  let table = crc32.table;
+  if (!table) {
+    table = crc32.table = new Int32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+      table[n] = c;
+    }
+  }
+  let crc = -1;
+  for (const byte of bytes) crc = table[(crc ^ byte) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ -1) >>> 0;
+};
+
+/**
+ * A minimal STORE-method zip whose every entry lies about where it goes (`name` is used as it is,
+ * so `../` escapes): the local header, the central directory and the end record, hand-rolled.
+ */
+const slipZip = names => {
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, content] of names) {
+    const label = Buffer.from(name, 'utf8');
+    const bytes = Buffer.from(content, 'utf8');
+    const check = crc32(bytes);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(0, 8); local.writeUInt16LE(0, 10); local.writeUInt16LE(0, 12);
+    local.writeUInt32LE(check, 14); local.writeUInt32LE(bytes.length, 18); local.writeUInt32LE(bytes.length, 22);
+    local.writeUInt16LE(label.length, 26); local.writeUInt16LE(0, 28);
+    parts.push(local, label, bytes);
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0); entry.writeUInt16LE(20, 4); entry.writeUInt16LE(20, 6);
+    entry.writeUInt16LE(0, 8); entry.writeUInt16LE(0, 10); entry.writeUInt16LE(0, 12); entry.writeUInt16LE(0, 14);
+    entry.writeUInt32LE(check, 16); entry.writeUInt32LE(bytes.length, 20); entry.writeUInt32LE(bytes.length, 24);
+    entry.writeUInt16LE(label.length, 28); entry.writeUInt16LE(0, 30); entry.writeUInt16LE(0, 32);
+    entry.writeUInt16LE(0, 34); entry.writeUInt16LE(0, 36); entry.writeUInt32LE(0, 38); entry.writeUInt32LE(offset, 42);
+    central.push(entry, label);
+    offset += 30 + label.length + bytes.length;
+  }
+  const directory = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(0, 4); end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(names.length, 8); end.writeUInt16LE(names.length, 10);
+  end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16); end.writeUInt16LE(0, 20);
+  return Buffer.concat([...parts, directory, end]);
+};
+
+export function appsDataScenarios({ exe, verbose }) {
+  return {
+    // Export makes an archive of the data folder; import replaces it only after the red
+    // confirmation, keeps the replaced data aside, refuses while the application runs and refuses
+    // an archive that is broken or that writes outside the folder; the manager window offers the
+    // same two buttons, driven by the page automation with the native dialogs answered from env.
+    async 'apps-data'() {
+      const problems = [];
+      const directory = mkdtempSync(join(os.tmpdir(), 'alef-apps-data-'));
+      const home = join(directory, 'home');
+      const appHome = join(directory, 'apphome');
+      const data = join(appHome, 'data', DATA_ID); // mirror of application_base_dirs: <ALEF_APP_HOME>/data/<id>
+      const first = join(home, 'first.zip');
+      const ui = join(home, 'ui.zip');
+      const environment = { ALEF_HOME: home, ALEF_APP_HOME: appHome };
+      const cli = args => {
+        const result = spawnSync(exe, args, { encoding: 'utf8', timeout: 60000, env: { ...process.env, ALEF_E2E: '0', ...environment } });
+        return { code: result.status, out: result.stdout ?? '', err: result.stderr ?? '' };
+      };
+      const expect = (what, condition, detail = '') => {
+        console.log(`    ${condition ? 'ok  ' : 'FAIL'} ${what}${condition ? '' : `: ${detail}`}`);
+        if (!condition) problems.push(`${what}: ${detail}`);
+      };
+      // The page of the run: `write` fills the store and quits; `hold` reports ready and stays.
+      const page = mode => `import { api, report } from './harness.js';
+${mode === 'hold' ? "await report('appsdata-holding');\n" : `await api.store.set('apps-data', 'first');\nawait report('appsdata-written');\nawait api.app.quit(0);\n`}`;
+      const site = prepareSite('apps-data', DATA_APP);
+      writeFileSync(join(site, 'dist', 'page.js'), '');
+      // `clipboard.read` becomes a right the manifest asks for: seeding a decision for it is what
+      // puts the application into the list of the manager window (the same store both read).
+      const manifest = readFileSync(join(site, 'alef.ktav'), 'utf8');
+      if (!manifest.includes('read: false')) { problems.push('the fixture manifest has no `read: false` to turn into an asked right'); }
+      writeFileSync(join(site, 'alef.ktav'), manifest.replace('read: false', 'read: true'));
+      const run = async mode => {
+        writeFileSync(join(site, 'dist', 'page.js'), page(mode));
+        const running = startApp({
+          exe, args: ['--app', site], verbose,
+          env: { ...process.env, ALEF_E2E: '1', ...environment },
+        });
+        try {
+          await running.waitFor(line => line.includes(`appsdata-${mode === 'hold' ? 'holding' : 'written'}`), 120000, `the page of the ${mode} run`, { survivesExit: true });
+          if (mode !== 'hold') {
+            const exit = await running.waitForExit(30000);
+            if (exit?.code !== 0) problems.push(`the ${mode} run ended with ${exit?.code ?? 'no exit'}`);
+          }
+        } catch (error) { problems.push(`${mode} run: ${error.message}`); }
+        return running;
+      };
+      let holding;
+      try {
+        const seeded = cli(['permissions', 'set', site, 'clipboard.read', 'allow']);
+        if (seeded.code !== 0) problems.push(`seed clipboard.read: ${seeded.err}`);
+
+        // The application runs once and leaves its data behind: the store file of the page plus a
+        // plain file, both in the data folder that ALEF_APP_HOME names.
+        await run('write');
+        writeFileSync(join(data, 'note.txt'), 'alef apps-data note');
+        expect('the data folder holds the store and the note', existsSync(join(data, 'store')) && existsSync(join(data, 'note.txt')), dirHash(data));
+        const original = dirHash(data);
+
+        // Export: an archive that is not empty, and the data are untouched.
+        const exported = cli(['apps', 'export', site, first]);
+        expect('export succeeds', exported.code === 0 && /Exported \d+ files/.test(exported.out), `${exported.code}: ${exported.out}${exported.err}`);
+        expect('the archive is not empty', existsSync(first) && statSync(first).size > 0, first);
+
+        // The data change after the export: the import brings the old state back.
+        writeFileSync(join(data, 'extra.txt'), 'written after the export');
+
+        // Without the red confirmation nothing happens.
+        const unconfirmed = cli(['apps', 'import', site, first]);
+        expect('an import without --confirm-red is refused with exit 2', unconfirmed.code === 2, `exit ${unconfirmed.code}: ${unconfirmed.out}${unconfirmed.err}`);
+        expect('the refusal names the way out', `${unconfirmed.out}${unconfirmed.err}`.includes('--confirm-red'), unconfirmed.out + unconfirmed.err);
+        expect('the data are unchanged after the refusal', dirHash(data) !== original && existsSync(join(data, 'extra.txt')), dirHash(data));
+
+        const confirmed = cli(['apps', 'import', site, first, '--confirm-red']);
+        expect('the confirmed import succeeds', confirmed.code === 0 && confirmed.out.includes('Imported'), `${confirmed.code}: ${confirmed.out}${confirmed.err}`);
+        expect('the replaced data are kept aside', confirmed.out.includes('Previous data kept in') && existsSync(`${data}.before-import`), confirmed.out);
+        expect('the import restored the exported data', dirHash(data) === original, dirHash(data));
+
+        // The import refuses while the application is running.
+        const beforeRunning = dirHash(data);
+        holding = await run('hold');
+        const refused = cli(['apps', 'import', site, first, '--confirm-red']);
+        expect('an import while the application runs is refused', refused.code !== 0 && /running/.test(`${refused.out}${refused.err}`), `${refused.code}: ${refused.out}${refused.err}`);
+        expect('the data are unchanged after the refusal of a running application', dirHash(data) === beforeRunning, dirHash(data));
+        holding.stop();
+        const closed = await holding.waitForExit(30000);
+        if (closed === undefined) problems.push('the holding application did not close');
+        holding = undefined;
+
+        // A broken archive and an archive that writes outside the folder are both refused.
+        const broken = Buffer.from(readFileSync(first));
+        broken[Math.floor(broken.length / 2)] ^= 0xFF;
+        const brokenPath = join(home, 'broken.zip');
+        writeFileSync(brokenPath, broken);
+        const beforeBroken = dirHash(data);
+        const corrupted = cli(['apps', 'import', site, brokenPath, '--confirm-red']);
+        expect('a corrupted archive is refused', corrupted.code !== 0, `${corrupted.code}: ${corrupted.out}${corrupted.err}`);
+        expect('the data are unchanged after the corrupted archive', dirHash(data) === beforeBroken, dirHash(data));
+        const slipPath = join(home, 'slip.zip');
+        writeFileSync(slipPath, slipZip([['../evil.txt', 'outside'], ['alef-data.ktav', 'format: 1\n']]));
+        const slip = cli(['apps', 'import', site, slipPath, '--confirm-red']);
+        expect('a zip-slip archive is refused', slip.code !== 0, `${slip.code}: ${slip.out}${slip.err}`);
+        expect('the data are unchanged after the zip-slip archive', dirHash(data) === beforeBroken, dirHash(data));
+        expect('no file escaped the folder', !existsSync(join(appHome, 'data', 'evil.txt')) && !existsSync(join(appHome, 'evil.txt')), appHome);
+
+        // The manager window: the same export and the red-confirmed import, the native dialogs
+        // answered from ALEF_E2E_DIALOGS in order (three answers: save for the export, then two opens for the two import attempts).
+        const steps = [
+          { select: DATA_ID }, { stability: DATA_ID },
+          { export: DATA_ID }, { snapshot: 'exported' },
+          { import: DATA_ID, confirm: false },
+          { import: DATA_ID, confirm: true },
+          { snapshot: 'imported' }, { close: true },
+        ];
+        const uiRunning = startApp({
+          exe, args: ['apps', '--ui'], verbose,
+          env: {
+            ...process.env, ALEF_E2E: '1', ...environment,
+            ALEF_E2E_APPS_UI: JSON.stringify(steps),
+            ALEF_E2E_DIALOGS: JSON.stringify([{ save: [ui] }, { open: [ui] }, { open: [ui] }]),
+          },
+        });
+        try {
+          const exit = await uiRunning.waitForExit(120000);
+          if (exit?.code !== 0) problems.push(`the manager window ended with ${exit?.code ?? 'no exit'}`);
+          const reports = uiRunning.lines.filter(line => line.startsWith('ALEF_E2E '))
+            .map(line => { try { return JSON.parse(line.slice('ALEF_E2E '.length)); } catch { return null; } })
+            .filter(Boolean);
+          problems.push(...reports.filter(report => report.type === 'failure').map(report => `UI automation: ${report.message}`));
+          const ok = name => reports.some(report => report.type === 'check' && report.name === name && report.ok);
+          for (const name of ['export-ok', 'import-confirmation-required', 'import-ok', 'selection-node-stable', 'details-no-flash']) {
+            if (!ok(name)) problems.push(`the window never reported ${name} ok`);
+          }
+          expect('the window export wrote an archive', existsSync(ui) && statSync(ui).size > 0, ui);
+          // Cross-check through the CLI: the archive of the window holds the exported data, and the
+          // import that the window confirmed left them in place.
+          expect('the windowed import left the exported data in place', dirHash(data) === original, dirHash(data));
+        } catch (error) { problems.push(`manager window: ${error.message}`); }
+      } catch (error) { problems.push(error.message); }
+      finally { holding?.stop(); rmSync(directory, { recursive: true, force: true }); }
       return { problems, lines: [] };
     },
   };

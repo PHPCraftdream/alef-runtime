@@ -61,6 +61,96 @@ fn fnv1a(text: &str) -> u64 {
     })
 }
 
+/// The endpoint a plain (non-package) application of one user would claim: the same key and
+/// folder that [Endpoint::of] builds for a directory-authority context, without a context.
+fn plain_endpoint(id: &str, home: &std::path::Path, app_cache: &std::path::Path) -> Endpoint {
+    let identity = format!("{}|{}", home.display(), id);
+    let key = format!("{:016x}", fnv1a(&identity));
+    Endpoint {
+        folder: Endpoint::folder_for(&key, app_cache),
+        key,
+    }
+}
+
+/// Whether an application of this user is running: somebody holds its single-instance endpoint.
+/// Sync on purpose, so non-async code (data import) can call it. The answer can be stale in
+/// either direction if an application starts or stops while it is probed; a caller that refuses
+/// to act on "running" simply asks again later. The probe of a free endpoint claims and releases
+/// it at once, which clears a dead leftover socket as a side effect.
+pub fn is_running(id: &str, home: &std::path::Path, app_cache: &std::path::Path) -> bool {
+    plain_endpoint(id, home, app_cache).held().unwrap_or(true) // unknown: refusing a data import is the safe side
+}
+
+#[cfg(windows)]
+const ERROR_FILE_NOT_FOUND: i32 = 2;
+#[cfg(windows)]
+const ERROR_PATH_NOT_FOUND: i32 = 3;
+#[cfg(windows)]
+const ERROR_ACCESS_DENIED: i32 = 5;
+#[cfg(windows)]
+const ERROR_PIPE_BUSY: i32 = 231;
+
+#[cfg(unix)]
+impl Endpoint {
+    /// `Ok(true)` when a live peer holds the endpoint.
+    fn held(&self) -> std::io::Result<bool> {
+        use std::os::unix::fs::MetadataExt;
+        let path = platform::socket(self);
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.folder)?;
+        let metadata = std::fs::symlink_metadata(&self.folder)?;
+        // As at claim: never probe through a folder another user planted.
+        // SAFETY: geteuid has no preconditions.
+        if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "instance folder is not owned by this user",
+            ));
+        }
+        match std::os::unix::net::UnixListener::bind(&path) {
+            Ok(listener) => {
+                drop(listener);
+                let _ = std::fs::remove_file(&path);
+                Ok(false)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                match std::os::unix::net::UnixStream::connect(&path) {
+                    Ok(_) => Ok(true),
+                    Err(_) => {
+                        // Nobody listens: the socket is a leftover of a dead process.
+                        std::fs::remove_file(&path)?;
+                        Ok(false)
+                    }
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Endpoint {
+    /// `Ok(true)` when a live peer holds the endpoint: a client end exists only while a server of
+    /// a live instance does, and an access-denied or busy pipe has an owner too.
+    fn held(&self) -> std::io::Result<bool> {
+        use tokio::net::windows::named_pipe::ClientOptions;
+        match ClientOptions::new().open(&platform::name(self)) {
+            Ok(_) => Ok(true),
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => Ok(true),
+            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => Ok(true),
+            Err(error)
+                if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND)
+                    || error.raw_os_error() == Some(ERROR_PATH_NOT_FOUND) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
 /// A Unix socket path has to be shorter than 104 bytes (macOS) or 108 (Linux, with the closing zero).
 #[cfg_attr(windows, allow(dead_code))]
 const SOCKET_PATH_LIMIT: usize = 100;

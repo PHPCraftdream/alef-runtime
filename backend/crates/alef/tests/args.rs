@@ -283,6 +283,44 @@ fn apps_default_and_install_unsigned_parse() {
 }
 
 #[test]
+fn apps_data_subcommands_parse_and_reject_unknown_ones() {
+    assert_eq!(
+        parse(&["apps", "export", "папка", "data.zip"]).unwrap(),
+        Command::AppsExport {
+            app: "папка".to_owned(),
+            archive: PathBuf::from("data.zip")
+        }
+    );
+    assert_eq!(
+        parse(&[
+            "apps",
+            "import",
+            "app-id",
+            "data.zip",
+            "--confirm-red",
+            "--json"
+        ])
+        .unwrap(),
+        Command::AppsImport {
+            app: "app-id".to_owned(),
+            archive: PathBuf::from("data.zip"),
+            confirm_red: true,
+            json: true
+        }
+    );
+    for bad in [
+        &["apps", "frobnicate"][..],
+        &["apps", "export", "a", "b", "extra"][..],
+        &["apps", "import", "a", "b", "--unknown"][..],
+    ] {
+        assert!(
+            parse(bad).unwrap_err().contains("INVALID_ARGUMENT"),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
 fn a_multibyte_target_is_kept_as_an_os_string() {
     let Command::Run(launch) = parse(&["run", "приложение"]).unwrap() else {
         panic!("a run");

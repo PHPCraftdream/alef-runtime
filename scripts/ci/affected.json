@@ -102,6 +102,14 @@
       "scenarios": ["apps-ui"]
     },
     {
+      "glob": "backend/crates/alef/apps/**",
+      "scenarios": ["apps-data"]
+    },
+    {
+      "glob": "backend/crates/alef/assets/apps/apps-e2e.js",
+      "scenarios": ["apps-data"]
+    },
+    {
       "glob": "tests/e2e/scenarios/data.mjs",
       "scenarios": [
         "fs",

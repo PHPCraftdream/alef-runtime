@@ -55,6 +55,8 @@ alef --app <КАТАЛОГ> [параметры] [-- <аргументы при�
 alef install <ПАКЕТ> [--trust-key <КЛЮЧ>] [--allow-unsigned]
 alef uninstall <ID> [--purge-data]
 alef apps [--json|--ui]
+alef apps export <PATH|ID> <FILE.zip>
+alef apps import <PATH|ID> <FILE.zip> [--confirm-red] [--json]
 alef permissions list|set|reset <PATH|ID> … [--confirm-red]
 alef ai limits|log …
 alef trust <ЗАПРОС> <ОТВЕТ>
