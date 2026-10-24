@@ -64,6 +64,18 @@ pub fn load_or_create_token(ep: &Endpoint) -> io::Result<(Token, bool)> {
     }
 }
 
+/// Load the token for `ep` if it exists; never creates anything.
+pub fn load_existing_token(ep: &Endpoint) -> io::Result<Token> {
+    #[cfg(unix)]
+    {
+        read_existing(&unix_token_path(ep))
+    }
+    #[cfg(windows)]
+    {
+        read_existing(&windows_token_path(ep)?)
+    }
+}
+
 /// Wrap raw bytes, mapping the token error to an I/O error.
 fn token_from_bytes(bytes: Vec<u8>) -> io::Result<Token> {
     Token::new(bytes).map_err(|_| io::Error::new(ErrorKind::InvalidData, "empty token"))
@@ -211,6 +223,15 @@ mod tests {
             let dmd = fs::symlink_metadata(&ep.unix_dir).unwrap();
             assert_eq!(dmd.permissions().mode() & 0o777, 0o700);
         }
+    }
+
+    #[test]
+    fn load_existing_token_reads_without_creating() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ep = temp_endpoint(tmp.path());
+        assert!(load_existing_token(&ep).is_err());
+        let (t, _) = load_or_create_token(&ep).unwrap();
+        assert_eq!(load_existing_token(&ep).unwrap().expose(), t.expose());
     }
 
     #[cfg(unix)]

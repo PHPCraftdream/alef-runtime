@@ -12,5 +12,7 @@ pub use consent::permissions;
 pub mod install;
 pub mod relaunch;
 pub mod runtimes;
+#[path = "../ui/singleton.rs"]
+pub mod singleton;
 
 pub use application::plan;

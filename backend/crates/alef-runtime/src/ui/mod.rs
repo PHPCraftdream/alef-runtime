@@ -96,6 +96,8 @@ pub(crate) enum UiRequest {
         paths: Vec<std::path::PathBuf>,
         reply: UiReply,
     },
+    /// Raise the window(s) from another process (singleton re-launch).
+    Focus,
 }
 
 pub(crate) struct UiReply {
@@ -186,6 +188,32 @@ impl RuntimeHandle {
     pub(crate) fn detach(&self) {
         self.proxy.send_replace(None);
         self.admission.close();
+    }
+
+    /// Asks the event loop to restore, show and focus the window; safe to call
+    /// from a plain thread while the loop runs elsewhere.
+    pub fn focus_main_window(&self) -> io::Result<()> {
+        if self.host.windowless.load(Ordering::SeqCst) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "There is no window in this mode",
+            ));
+        }
+        if self.admission.is_closed() {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Native window is closed",
+            ));
+        }
+        let proxy = self.proxy.borrow().clone().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "Native window is not attached")
+        })?;
+        self.sender
+            .blocking_send(UiRequest::Focus)
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Native window is closed"))?;
+        proxy
+            .send_event(Wake)
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Native event loop is closed"))
     }
 
     /// Non-durable broadcast to the event streams of every document; returns once queued.
@@ -321,6 +349,10 @@ impl Host for RuntimeHandle {
         {
             wake();
         }
+    }
+
+    fn focus(&self) {
+        let _ = self.focus_main_window();
     }
 
     fn theme(&self) -> Theme {

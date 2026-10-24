@@ -63,6 +63,8 @@ alef runtime list|install|prune …
 alef warm status|start|stop|enable|disable [--json]
 ```
 
+`alef apps --ui` и `alef settings --ui` открывают окно один раз: повторный запуск поднимает уже открытое окно, а не создаёт новое (подробности — [docs/stages/m11-warm-start.md](docs/stages/m11-warm-start.md)).
+
 `run` принимает каталог разработки, файл `.alef` или id установленного приложения. Параметры запуска: `--dev-url` (документ с сервера разработки на 127.0.0.1), `--devtools[=PORT]` (локальная отладка Servo, только для каталога разработки), `--grant allow|substitute|deny`, `--trust-key`, `--allow-unsigned`, `--no-prompt`. Полный текст — `alef --help` и `backend/crates/alef/src/cli/args.rs`. `ALEF_TIMING=1` печатает в stderr метки фаз холодного запуска (`ALEF_TIMING <имя> <мс от старта>`); список вех — [docs/stages/m11-warm-start.md](docs/stages/m11-warm-start.md).
 
 **Прогрев запуска** по умолчанию выключен; включается `alef warm enable` (автозапуск брокера + старт) или `alef warm start`, выключается `alef warm stop` (останавливает брокера и свободные запасные процессы, автозапуск не снимает) и `alef warm disable` (снимает запись автозапуска). Аварийное отключение на один запуск — `ALEF_WARM=0`, отладка — `ALEF_WARM_DEBUG=1`. Подробности — [docs/stages/m11-warm-start.md](docs/stages/m11-warm-start.md).

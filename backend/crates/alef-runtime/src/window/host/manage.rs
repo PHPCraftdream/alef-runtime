@@ -712,6 +712,10 @@ impl App {
                     call,
                     reply,
                 } => (caller, call, reply),
+                UiRequest::Focus => {
+                    self.raise_windows();
+                    continue;
+                }
                 #[cfg(feature = "e2e")]
                 UiRequest::Drop {
                     window,
@@ -737,6 +741,18 @@ impl App {
             }
             let result = self.handle_request(event_loop, caller, call);
             reply.finish(result);
+        }
+    }
+
+    /// Restore, show and focus every window: the answer to a singleton re-launch.
+    fn raise_windows(&mut self) {
+        for state in &mut self.windows {
+            let _ = state.apply(WindowOp::Restore);
+            let _ = state.apply(WindowOp::Show);
+            let _ = state.apply(WindowOp::Focus);
+            state
+                .window
+                .request_user_attention(Some(winit::window::UserAttentionType::Informational));
         }
     }
 }

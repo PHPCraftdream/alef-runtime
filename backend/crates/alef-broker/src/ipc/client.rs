@@ -48,16 +48,27 @@ impl Client {
     }
 
     /// Connect, verify the server, run the mutual handshake, send `hello`,
-    /// and wait for `HelloAck`.
+    /// and wait for `HelloAck` (with the default timeout).
     pub fn connect_with_hello(
         ep: &Endpoint,
         token: &Token,
         hello: Hello,
     ) -> Result<Client, ConnectError> {
-        let mut conn = platform_connect(ep)?;
-        conn.set_read_timeout(Some(CLIENT_TIMEOUT))
+        Client::connect_with_deadline(ep, token, hello, CLIENT_TIMEOUT)
+    }
+
+    /// [`connect_with_hello`] with an explicit deadline for the connect and
+    /// every handshake step.
+    pub fn connect_with_deadline(
+        ep: &Endpoint,
+        token: &Token,
+        hello: Hello,
+        timeout: Duration,
+    ) -> Result<Client, ConnectError> {
+        let mut conn = platform_connect(ep, timeout)?;
+        conn.set_read_timeout(Some(timeout))
             .map_err(ConnectError::Io)?;
-        conn.set_write_timeout(Some(CLIENT_TIMEOUT))
+        conn.set_write_timeout(Some(timeout))
             .map_err(ConnectError::Io)?;
 
         // Verify the server's OS identity before sending any secret material.
@@ -175,31 +186,29 @@ fn reject_to_error(reason: RejectReason) -> ConnectError {
 }
 
 /// Platform connect; maps "cannot open the entry point" to `NoBroker`.
-fn platform_connect(ep: &Endpoint) -> Result<Box<dyn Conn>, ConnectError> {
+fn platform_connect(ep: &Endpoint, timeout: Duration) -> Result<Box<dyn Conn>, ConnectError> {
     #[cfg(unix)]
     {
-        let stream = crate::ipc::unix::connect_with_timeout(&ep.unix_socket, CLIENT_TIMEOUT)
-            .map_err(|e| match e.kind() {
+        let stream = crate::ipc::unix::connect_with_timeout(&ep.unix_socket, timeout).map_err(
+            |e| match e.kind() {
                 ErrorKind::NotFound
                 | ErrorKind::ConnectionRefused
                 | ErrorKind::PermissionDenied => ConnectError::NoBroker,
                 _ => ConnectError::Io(e),
-            })?;
+            },
+        )?;
         Ok(Box::new(stream))
     }
     #[cfg(windows)]
     {
         let own_sid = crate::ipc::windows::current_user_sid().map_err(ConnectError::Io)?;
-        let handle = crate::ipc::windows::open_client(
-            &ep.windows_pipe_wide(),
-            CLIENT_TIMEOUT,
-            Some(&own_sid),
-        )
-        .map_err(|e| match e.kind() {
-            ErrorKind::NotFound => ConnectError::NoBroker,
-            ErrorKind::PermissionDenied => ConnectError::AuthFailed,
-            _ => ConnectError::Io(e),
-        })?;
+        let handle =
+            crate::ipc::windows::open_client(&ep.windows_pipe_wide(), timeout, Some(&own_sid))
+                .map_err(|e| match e.kind() {
+                    ErrorKind::NotFound => ConnectError::NoBroker,
+                    ErrorKind::PermissionDenied => ConnectError::AuthFailed,
+                    _ => ConnectError::Io(e),
+                })?;
         let conn = crate::ipc::windows::PipeConn::new(handle, false).map_err(ConnectError::Io)?;
         Ok(Box::new(conn))
     }
