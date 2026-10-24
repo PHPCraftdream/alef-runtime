@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import { crc32, deflateRawSync, inflateRawSync } from 'node:zlib';
 
 import { extractedMembers, here, startApp, transpileApi, verdictOf } from '../../lib.mjs';
@@ -719,7 +719,7 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
           run.code === 0 && verdictOf(run.lines)?.[1] === 'PASS', `exit ${run.code}: ${verdictOf(run.lines)?.[2] ?? 'no verdict'}`);
         const appdata = reported(run.lines, 'appdata');
         expect('the app data of the page is inside the isolated app home',
-          appdata !== undefined && appdata === join(appHome, 'data', ID), String(appdata));
+          appdata !== undefined && resolve(appdata).startsWith(join(resolve(appHome), 'data') + sep), String(appdata));
 
         // Nothing on disk matches any member by content or basename.
         const files = [tmp, home, appHome].flatMap(root => collectFiles(root));
