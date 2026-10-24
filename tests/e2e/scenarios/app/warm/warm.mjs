@@ -7,7 +7,7 @@
 // builds the env fragment once and passes the SAME fragment to the broker (through `alef warm
 // start`) and to every `alef run` client, otherwise the handshake rejects (StoreMismatch).
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -107,7 +107,14 @@ export function warmScenarios({ exe, verbose, timeoutMs }) {
       // Short base: the socket path must fit the ~100 byte Unix limit; $TMPDIR is long on macOS, /tmp is not.
       const runtimeDir = process.platform === 'win32' ? undefined : mkdtempSync(join('/tmp', 'alef-warm-'));
       const fragment = warmEnvironment({ home, appHome, runtimeDir });
-      const env = { ...process.env, ...fragment };
+      // The broker writes what happened to its spares here (ALEF_WARM_LOG); printed when a check fails.
+      const brokerLog = join(envTemp, 'broker.log');
+      const env = { ...process.env, ...fragment, ALEF_WARM_LOG: brokerLog };
+      const showBrokerLog = () => {
+        try { console.log(`    broker log:
+${readFileSync(brokerLog, 'utf8').split(String.fromCharCode(10)).map(line => `      | ${line}`).join(String.fromCharCode(10))}`); }
+        catch { console.log('    broker log: none'); }
+      };
       let brokerPid = null;
       let basicSite = null;
 
@@ -240,6 +247,7 @@ export function warmScenarios({ exe, verbose, timeoutMs }) {
           if (!ok) {
             problems.push(`the pool did not recover a ready windowed spare, or granted_total moved while idle (${before} -> ${after})`);
             console.log(`    status: ${JSON.stringify(replacement.status?.broker ?? null)}`);
+            showBrokerLog();
             if (process.platform === 'win32') {
               // What the stuck replacement is doing: its command line, age and whether its window thread answers.
               const script = "Get-CimInstance Win32_Process -Filter \"Name like 'alef%'\" | Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine | Format-List | Out-String; Get-Process -Name alef* | Select-Object Id,CPU,Responding,@{n='Threads';e={$_.Threads.Count}},@{n='MB';e={[int]($_.WorkingSet64/1MB)}} | Format-Table | Out-String";

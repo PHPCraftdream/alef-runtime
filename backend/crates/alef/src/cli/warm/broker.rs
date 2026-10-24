@@ -104,6 +104,22 @@ pub(crate) fn run_broker(no_tray: bool) -> Result<u8, Failure> {
         NoJitter,
         version,
     ));
+    // `ALEF_WARM_LOG=<file>`: one line per spawn and per exit of a spare (with what it wrote), and
+    // exits are polled twice a second, so a spare that died at once shows up in the file.
+    let log_path = std::env::var_os("ALEF_WARM_LOG").map(std::path::PathBuf::from);
+    if let Some(path) = log_path.clone() {
+        broker.set_debug(Arc::new(move |line: &str| {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = writeln!(file, "{line}");
+            }
+        }));
+    }
+    let poll_cap = log_path.map(|_| Duration::from_millis(500));
     let (stop_tx, stop_rx) = channel::<()>();
     let (done_tx, done_rx) = channel::<()>();
 
@@ -175,7 +191,8 @@ pub(crate) fn run_broker(no_tray: bool) -> Result<u8, Failure> {
             .spawn(move || {
                 loop {
                     let wake = broker.pump();
-                    match stop_rx.recv_timeout(wake.unwrap_or(NO_WAKE)) {
+                    let wait = wake.unwrap_or(NO_WAKE).min(poll_cap.unwrap_or(NO_WAKE));
+                    match stop_rx.recv_timeout(wait) {
                         Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
                         Err(RecvTimeoutError::Timeout) => {}
                     }

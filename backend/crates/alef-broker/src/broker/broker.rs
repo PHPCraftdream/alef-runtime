@@ -75,6 +75,9 @@ struct SpareRecord {
 /// A granted launch's relay: the finisher thread owns the process and the
 /// detached client writer (see [`start_relay`]).
 
+/// Receives one diagnostic line per broker event.
+pub type DebugSink = Arc<dyn Fn(&str) + Send + Sync>;
+
 struct Inner<S: Spawner, C: Clock, J: Jitter> {
     pool: Pool<C, J>,
     spawner: Arc<S>,
@@ -98,6 +101,8 @@ struct Inner<S: Spawner, C: Clock, J: Jitter> {
     /// Cheap mirror of pool slot states for `AdminStatusReply` (the pool
     /// itself exposes no state getter).
     slot_view: [String; 2],
+    /// Optional event sink for diagnostics (`ALEF_WARM_LOG`): spawns, exits of spares and what they wrote.
+    debug: Option<DebugSink>,
     granted_total: u64,
     live_launches: u32,
     shutting_down: bool,
@@ -139,6 +144,7 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
                 own_alef_home,
                 own_alef_app_home,
                 slot_view: ["empty".into(), "empty".into()],
+                debug: None,
                 granted_total: 0,
                 shutting_down: false,
                 finished_tx,
@@ -151,18 +157,41 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
     /// Owner entry point: retire exited pool spares, collect finished launch
     /// exits, run `fill` and execute the resulting actions. Returns the pool's
     /// `next_wake` (relative to the pool clock's zero) or `None`.
+    /// Installs the diagnostic sink (the binary does it for `ALEF_WARM_LOG`).
+    pub fn set_debug(&self, sink: DebugSink) {
+        self.lock().debug = Some(sink);
+    }
+
     pub fn pump(&self) -> Option<Duration> {
         let mut inner = self.lock();
         let now = inner.pool.clock().now();
 
         // Pool-owned spares that died before a grant.
         let mut exited = Vec::new();
+        let debug = inner.debug.clone();
         for (id, rec) in inner.spares.iter_mut() {
             let Some(proc) = rec.process.as_mut() else {
                 continue;
             };
-            if matches!(proc.try_wait(), Ok(Some(_))) {
+            if let Ok(Some(info)) = proc.try_wait() {
                 exited.push((*id, rec.kind));
+                if let Some(sink) = &debug {
+                    let tail = proc.stderr().map(|mut pipe| {
+                        let mut text = String::new();
+                        let _ = std::io::Read::read_to_string(
+                            &mut std::io::Read::take(&mut pipe, 4096),
+                            &mut text,
+                        );
+                        text
+                    });
+                    sink(&format!(
+                        "spare {} exited code={} signal={:?}; stderr: {}",
+                        id.0,
+                        info.code,
+                        info.signal,
+                        tail.unwrap_or_default().replace('\n', " | ")
+                    ));
+                }
             }
         }
         for (id, kind) in exited {
@@ -792,12 +821,23 @@ fn relay_stream(
 impl<S: Spawner, C: Clock, J: Jitter> Inner<S, C, J> {
     /// Execute pool actions. Spawn: create the process, register the record
     /// (exit detection happens in `pump`'s poll). Kill: terminate.
+    fn note(&self, text: String) {
+        if let Some(sink) = &self.debug {
+            sink(&text);
+        }
+    }
+
     fn execute(&mut self, actions: &[Action]) {
         for action in actions {
             match *action {
                 Action::Spawn { id, kind, .. } => match self.spawner.spawn(kind, id) {
                     Ok(process) => {
                         let pid = process.pid();
+                        self.note(format!(
+                            "spawn spare {} kind={} pid={pid}",
+                            id.0,
+                            kind.index()
+                        ));
                         self.spares.insert(
                             id,
                             SpareRecord {
@@ -810,7 +850,8 @@ impl<S: Spawner, C: Clock, J: Jitter> Inner<S, C, J> {
                         );
                         self.slot_view[kind.index()] = "initializing".into();
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        self.note(format!("spawn spare {} failed: {error}", id.0));
                         let now = self.pool.clock().now();
                         let _ = self.pool.on_failed(id, now);
                         self.slot_view[kind.index()] = "backoff".into();
