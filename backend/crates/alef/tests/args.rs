@@ -772,3 +772,41 @@ fn warm_takes_one_verb_and_the_json_flag() {
         assert!(parse(&bad).is_err(), "{bad:?}");
     }
 }
+
+#[test]
+fn settings_parses_the_line_the_set_and_the_ui_forms() {
+    assert_eq!(
+        parse(&["settings"]).unwrap(),
+        Command::Settings { json: false }
+    );
+    assert_eq!(
+        parse(&["settings", "--json"]).unwrap(),
+        Command::Settings { json: true }
+    );
+    assert_eq!(parse(&["settings", "--ui"]).unwrap(), Command::SettingsUi);
+    assert_eq!(
+        parse(&["settings", "set", "language", "ru"]).unwrap(),
+        Command::SettingsSet {
+            code: "ru".to_owned()
+        }
+    );
+}
+
+#[test]
+fn settings_is_strict_about_its_forms_and_flags() {
+    let usage = "settings: usage: settings [set language <code>|--ui|--json]";
+    for bad in [
+        vec!["settings", "set"],
+        vec!["settings", "set", "language"],
+        vec!["settings", "bogus"],
+        vec!["settings", "--json", "--ui"],
+        vec!["settings", "--ui", "--json"],
+        vec!["settings", "set", "language", "ru", "extra"],
+        vec!["settings", "set", "tone", "ru"],
+        vec!["settings", "--json", "extra"],
+    ] {
+        let error = parse(&bad).unwrap_err();
+        assert!(error.contains("INVALID_ARGUMENT"), "{bad:?}: {error}");
+        assert!(error.contains(usage), "{bad:?}: {error}");
+    }
+}

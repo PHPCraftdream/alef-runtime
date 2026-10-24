@@ -19,6 +19,8 @@ use std::ffi::OsString;
 mod apps_window;
 #[path = "../consent/window.rs"]
 mod consent_window;
+#[path = "../../apps/settings.rs"]
+mod settings_window;
 
 #[cfg(feature = "e2e")]
 const HOOKS_NOTICE: &str = "this build carries the end-to-end hooks";
@@ -117,6 +119,27 @@ pub(crate) async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         Command::AppsUi => {
             install_tls()?;
             apps_window::run(DEFAULT_ICON.to_vec())
+                .await
+                .map_err(Failure::Runtime)?;
+            return Ok(0);
+        }
+        Command::Settings { json } => {
+            println!(
+                "{}",
+                settings_window::print_current(json).map_err(Failure::Usage)?
+            );
+            return Ok(0);
+        }
+        Command::SettingsSet { code } => {
+            println!(
+                "{}",
+                settings_window::settings_set_line(&code).map_err(Failure::Usage)?
+            );
+            return Ok(0);
+        }
+        Command::SettingsUi => {
+            install_tls()?;
+            settings_window::run(DEFAULT_ICON.to_vec())
                 .await
                 .map_err(Failure::Runtime)?;
             return Ok(0);

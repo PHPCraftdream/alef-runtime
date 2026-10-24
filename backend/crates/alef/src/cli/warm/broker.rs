@@ -3,12 +3,15 @@
 //! the constant per-user process. The main thread owns the tray (or waits
 //! for the stop signal without one); a worker thread drives the [`Broker`]
 //! pump loop and the shutdown, and the IPC server runs on its own thread.
+//! The tray is rebuilt when the stored interface language changes (polled
+//! by the tray dispatcher); an admin shutdown or a tray quit ends the run.
 //! One broker per session: a second start reports "already running" and
 //! exits successfully.
 
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alef_broker::broker::{Broker, ProcessSpawner};
@@ -18,7 +21,8 @@ use alef_broker::ipc::ReplyTo;
 use alef_broker::pool::{Jitter, PoolConfig, SystemClock};
 use alef_broker::protocol::message::{ClientMsg, OsBytes};
 use alef_broker::protocol::warm::{decode_warm_admin_msg, WarmAdminMsg};
-use alef_runtime::{BrokerTray, BrokerTrayCommand, BrokerTrayConfig};
+use alef_core::security::permissions::language::{Language, SettingsStore};
+use alef_runtime::{BrokerTray, BrokerTrayCommand, BrokerTrayConfig, BrokerTrayHandle};
 
 use super::control::spawn_detached;
 use super::endpoint::endpoint;
@@ -43,6 +47,9 @@ impl Jitter for NoJitter {
 struct BrokerHandler {
     broker: Arc<AppBroker>,
     stop: Sender<()>,
+    /// Set with `stop` on an admin shutdown; tells the tray loop apart from
+    /// a language-change rebuild.
+    quit: Arc<AtomicBool>,
 }
 
 impl Handler for BrokerHandler {
@@ -56,8 +63,26 @@ impl Handler for BrokerHandler {
             Ok(WarmAdminMsg::Shutdown(_))
         ) {
             let _ = self.stop.send(());
+            self.quit.store(true, Ordering::SeqCst);
         }
         self.broker.on_raw_frame(conn, conn_id, body)
+    }
+}
+
+/// The tray strings of one language.
+struct TrayLabels {
+    tooltip: &'static str,
+    apps: &'static str,
+    settings: &'static str,
+    quit: &'static str,
+}
+
+fn tray_labels(language: Language) -> TrayLabels {
+    TrayLabels {
+        tooltip: language.tray_tooltip(),
+        apps: language.tray_apps(),
+        settings: language.tray_settings(),
+        quit: language.tray_quit(),
     }
 }
 
@@ -122,6 +147,7 @@ pub(crate) fn run_broker(no_tray: bool) -> Result<u8, Failure> {
     let poll_cap = log_path.map(|_| Duration::from_millis(500));
     let (stop_tx, stop_rx) = channel::<()>();
     let (done_tx, done_rx) = channel::<()>();
+    let quit = Arc::new(AtomicBool::new(false));
 
     // The IPC server: one endpoint serves clients, spares and the admin.
     let server_thread = {
@@ -130,6 +156,7 @@ pub(crate) fn run_broker(no_tray: bool) -> Result<u8, Failure> {
         let handler = Arc::new(BrokerHandler {
             broker: Arc::clone(&broker),
             stop: stop_tx.clone(),
+            quit: Arc::clone(&quit),
         });
         std::thread::Builder::new()
             .name("broker-ipc".into())
@@ -137,47 +164,66 @@ pub(crate) fn run_broker(no_tray: bool) -> Result<u8, Failure> {
             .map_err(|e| Failure::Runtime(format!("broker thread: {e}")))?
     };
 
-    // The tray is created on the main thread; the pump thread exits it.
-    let tray = if no_tray {
-        None
+    // The tray is created on the main thread and rebuilt when the language
+    // changes; the command channel and the shared handle cell outlive any
+    // single tray instance.
+    let tray_available = !no_tray;
+    let (commands, tray_rx) = crossbeam_channel::bounded::<BrokerTrayCommand>(16);
+    let tray_handle: Arc<Mutex<Option<BrokerTrayHandle>>> = Arc::new(Mutex::new(None));
+    let mut language = if tray_available {
+        SettingsStore::new(alef_launch::consent::runtime_home()).language()
     } else {
-        let (commands, tray_rx) = crossbeam_channel::bounded::<BrokerTrayCommand>(16);
-        let config = BrokerTrayConfig {
-            icon_png: crate::cli::DEFAULT_ICON.to_vec(),
-            commands,
-            ..BrokerTrayConfig::default()
-        };
-        match BrokerTray::new(config) {
-            Ok(tray) => {
-                let handle = tray.handle();
-                // The tray commands: «Список приложений» and «Выход».
-                let dispatcher_exe = exe.clone();
-                let dispatcher_stop = stop_tx.clone();
-                let _ = std::thread::Builder::new()
-                    .name("broker-tray".into())
-                    .spawn(move || {
-                        while let Ok(command) = tray_rx.recv() {
-                            match command {
-                                BrokerTrayCommand::ShowApps => {
-                                    // The broker's own trusted list: argv array,
-                                    // no shell, detached from this process.
-                                    let _ = spawn_detached(&dispatcher_exe, &["apps", "--ui"]);
+        Language::English
+    };
+    if tray_available {
+        // The tray commands: Apps, Settings and Quit.
+        let dispatcher_exe = exe.clone();
+        let dispatcher_stop = stop_tx.clone();
+        let dispatcher_quit = Arc::clone(&quit);
+        let dispatcher_tray = Arc::clone(&tray_handle);
+        let _ = std::thread::Builder::new()
+            .name("broker-tray".into())
+            .spawn(move || {
+                // The language the tray on the main thread was built with.
+                let mut built = language;
+                loop {
+                    match tray_rx.recv_timeout(Duration::from_secs(2)) {
+                        Ok(command) => match command {
+                            BrokerTrayCommand::ShowApps => {
+                                // The broker's own trusted list: argv array,
+                                // no shell, detached from this process.
+                                let _ = spawn_detached(&dispatcher_exe, &["apps", "--ui"]);
+                            }
+                            BrokerTrayCommand::ShowSettings => {
+                                let _ = spawn_detached(&dispatcher_exe, &["settings", "--ui"]);
+                            }
+                            BrokerTrayCommand::Quit => {
+                                dispatcher_quit.store(true, Ordering::SeqCst);
+                                let _ = dispatcher_stop.send(());
+                                break;
+                            }
+                        },
+                        // Poll the stored language; a change asks the main
+                        // thread to rebuild the tray. exit() is called only
+                        // when the language actually differs, so run()
+                        // returning Ok always means quit or a rebuild.
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                            let current =
+                                SettingsStore::new(alef_launch::consent::runtime_home()).language();
+                            let mut guard =
+                                dispatcher_tray.lock().unwrap_or_else(|e| e.into_inner());
+                            if current != built {
+                                if let Some(handle) = guard.as_ref() {
+                                    handle.exit();
                                 }
-                                BrokerTrayCommand::Quit => {
-                                    let _ = dispatcher_stop.send(());
-                                    break;
-                                }
+                                built = current;
                             }
                         }
-                    });
-                Some((tray, handle))
-            }
-            Err(error) => {
-                eprintln!("alef: the tray is unavailable ({error}); waiting for `alef warm stop`");
-                None
-            }
-        }
-    };
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            });
+    }
 
     // The pump loop: pool wakeups only, no timers of its own. After the
     // stop: the pool shutdown (running applications are untouched), then
@@ -185,7 +231,7 @@ pub(crate) fn run_broker(no_tray: bool) -> Result<u8, Failure> {
     let worker = {
         let broker = Arc::clone(&broker);
         let server = Arc::clone(&server);
-        let tray_handle = tray.as_ref().map(|(_, handle)| handle.clone());
+        let worker_tray = Arc::clone(&tray_handle);
         std::thread::Builder::new()
             .name("broker-pump".into())
             .spawn(move || {
@@ -199,7 +245,11 @@ pub(crate) fn run_broker(no_tray: bool) -> Result<u8, Failure> {
                 }
                 broker.shutdown();
                 server.stop();
-                if let Some(handle) = tray_handle {
+                if let Some(handle) = worker_tray
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                {
                     handle.exit();
                 }
                 let _ = done_tx.send(());
@@ -207,24 +257,59 @@ pub(crate) fn run_broker(no_tray: bool) -> Result<u8, Failure> {
             .map_err(|e| Failure::Runtime(format!("broker thread: {e}")))?
     };
 
-    // The main thread: the tray blocks here, or the process waits quietly.
-    match tray {
-        Some((tray, _)) => match tray.run() {
-            // A quit through the handle: go on to the shutdown below.
-            Ok(()) => {}
-            Err(error) => {
-                eprintln!("alef: the tray is unavailable ({error}); waiting for `alef warm stop`");
-                let _ = done_rx.recv();
+    // The main thread: the tray blocks here and is rebuilt on a language
+    // change (the icon disappears and reappears: the platform backends are
+    // not taught to relabel the tray in place), or the process waits quietly.
+    if tray_available {
+        loop {
+            let labels = tray_labels(language);
+            let config = BrokerTrayConfig {
+                icon_png: crate::cli::DEFAULT_ICON.to_vec(),
+                tooltip: labels.tooltip.to_owned(),
+                show_apps_label: labels.apps.to_owned(),
+                show_settings_label: labels.settings.to_owned(),
+                quit_label: labels.quit.to_owned(),
+                commands: commands.clone(),
+            };
+            match BrokerTray::new(config) {
+                Ok(tray) => {
+                    // Shared with the pump worker and the dispatcher; exit
+                    // is idempotent.
+                    *tray_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(tray.handle());
+                    match tray.run() {
+                        // An Ok return means a quit or a language change:
+                        // the dispatcher exits the tray for nothing else.
+                        Ok(()) => {}
+                        Err(error) => {
+                            eprintln!(
+                                "alef: the tray is unavailable ({error}); waiting for `alef warm stop`"
+                            );
+                            let _ = done_rx.recv();
+                            break;
+                        }
+                    }
+                    if quit.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    // A language change: reload for the next build.
+                    language = SettingsStore::new(alef_launch::consent::runtime_home()).language();
+                }
+                // Creation failure (an invalid icon, say) is not a language
+                // issue: give up instead of spinning.
+                Err(error) => {
+                    eprintln!(
+                        "alef: the tray is unavailable ({error}); waiting for `alef warm stop`"
+                    );
+                    let _ = done_rx.recv();
+                    break;
+                }
             }
-        },
-        None => {
-            if no_tray {
-                eprintln!(
-                    "alef: the tray is disabled with --no-tray; waiting for `alef warm stop`"
-                );
-            }
-            let _ = done_rx.recv();
         }
+    } else {
+        if no_tray {
+            eprintln!("alef: the tray is disabled with --no-tray; waiting for `alef warm stop`");
+        }
+        let _ = done_rx.recv();
     }
     let _ = stop_tx.send(());
     let _ = worker.join();

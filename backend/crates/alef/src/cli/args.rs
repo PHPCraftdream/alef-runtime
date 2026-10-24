@@ -22,6 +22,7 @@ alef runtime prune [--keep <VERSION>]... [--dry-run]\n\
 alef install <PACKAGE> [--trust-key <KEY>] [--allow-unsigned]\n\
 alef uninstall <ID> [--purge-data]\n\
 alef apps [--json|--ui]\n\
+alef settings [--json|--ui]|set language <code>\n\
 alef broker [--no-tray]\n\
 alef warm status|start|stop|enable|disable [--json]\n\
 `run` and `--app` are the same launch: a directory runs as a development application,\n\
@@ -47,6 +48,8 @@ permissions: what you decided for an application. RIGHT is `permission` or `perm
   you have decided for, `reset` makes the next start ask again\n\
 ai: the daily AI quota of an application and what its AI did (the journal); N of 0 means blocked\n\
 trust: answer a trust request\n\
+settings: show or change the interface language of the runtime; `--ui` opens the window, where\n\
+  every click saves at once; a change applies to newly started windows\n\
 runtime: manage installed local runtime versions; install copies a local binary, no download\n\
   VERSION is strict MAJOR.MINOR.PATCH; prune always keeps the running version";
 
@@ -198,6 +201,16 @@ pub enum Command {
         json: bool,
     },
     AppsUi,
+    /// `alef settings`: the stored interface language, as a line or as JSON.
+    Settings {
+        json: bool,
+    },
+    /// `alef settings set language <CODE>`: validates and stores the language.
+    SettingsSet {
+        code: String,
+    },
+    /// `alef settings --ui`: the settings window.
+    SettingsUi,
     /// `alef consent <REQUEST> <ANSWER>`, started by the launcher itself: the permission window.
     Consent {
         request: PathBuf,
@@ -339,6 +352,38 @@ fn parse_warm(mut args: impl Iterator<Item = OsString>) -> Result<Command, Strin
     Ok(Command::Warm { command, json })
 }
 
+/// Strict parser for `alef settings`: the current language, `set language <CODE>` or `--ui`.
+fn parse_settings(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+    const USAGE_SETTINGS: &str = "settings: usage: settings [set language <code>|--ui|--json]";
+    let command = match args.next() {
+        None => Command::Settings { json: false },
+        Some(s) if s == "--json" => Command::Settings { json: true },
+        Some(s) if s == "--ui" => Command::SettingsUi,
+        Some(s) if s == "set" => {
+            let verb = args
+                .next()
+                .ok_or(USAGE_SETTINGS)?
+                .into_string()
+                .map_err(|_| USAGE_SETTINGS.to_owned())?;
+            if verb != "language" {
+                return Err(USAGE_SETTINGS.to_owned());
+            }
+            let code = args.next().ok_or(USAGE_SETTINGS)?;
+            if args.next().is_some() {
+                return Err(USAGE_SETTINGS.to_owned());
+            }
+            Command::SettingsSet {
+                code: text_of(code, "language code")?,
+            }
+        }
+        Some(_) => return Err(USAGE_SETTINGS.to_owned()),
+    };
+    if args.next().is_some() {
+        return Err(USAGE_SETTINGS.to_owned());
+    }
+    Ok(command)
+}
+
 /// Strict parser for the install-management commands; malformed forms are usage errors.
 fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
     let verb = args
@@ -422,6 +467,13 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
         .is_some_and(|first| matches!(first.to_str(), Some("install" | "uninstall" | "apps")))
     {
         return parse_install(arguments).map_err(|e| format!("INVALID_ARGUMENT: {e}"));
+    }
+    if arguments
+        .peek()
+        .is_some_and(|first| first.to_str() == Some("settings"))
+    {
+        arguments.next();
+        return parse_settings(arguments).map_err(|e| format!("INVALID_ARGUMENT: {e}"));
     }
     if arguments
         .peek()

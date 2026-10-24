@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The Linux broker tray: an org.kde.StatusNotifierItem with a com.canonical.dbusmenu
-//! of two fixed items, exported on the session bus and registered at
+//! of three fixed items with a separator, exported on the session bus and registered at
 //! org.kde.StatusNotifierWatcher. A minimal standalone reimplementation of
 //! `ui/integration/tray/linux` (whose backends are bound to the document `Owner`
 //! and to per-window menu plans): no GTK, one static item, no re-registration.
@@ -26,6 +26,8 @@ const ITEM_PATH: &str = "/org/alef/broker/StatusNotifierItem";
 const MENU_PATH: &str = "/org/alef/broker/StatusNotifierItem/menu";
 const POLL: Duration = Duration::from_secs(2);
 const CLICKS: usize = 64;
+/// dbusmenu id of the separator between Settings and Quit; never clickable.
+const SEPARATOR_ITEM: i32 = 4;
 
 /// How the worker obtains its session-bus connection; tests substitute a
 /// connector that fails without a bus, so nothing waits on the real environment.
@@ -66,8 +68,17 @@ struct ItemIface {
     state: Arc<Mutex<ItemState>>,
 }
 
+/// The menu labels in the configured language: Apps, Settings, Quit.
+#[derive(Clone)]
+struct Labels {
+    apps: String,
+    settings: String,
+    quit: String,
+}
+
 struct MenuIface {
     clicks: crossbeam_channel::Sender<i32>,
+    labels: Labels,
 }
 
 #[zbus::interface(name = "org.kde.StatusNotifierItem")]
@@ -150,6 +161,14 @@ fn props(label: &str) -> std::collections::HashMap<String, OwnedValue> {
     map
 }
 
+fn separator_props() -> std::collections::HashMap<String, OwnedValue> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(value) = owned(Value::from("separator".to_owned())) {
+        map.insert("type".to_owned(), value);
+    }
+    map
+}
+
 fn leaf(id: i32, label: &str) -> Result<OwnedValue, zbus::zvariant::Error> {
     owned(Value::from(Structure::from((
         id,
@@ -158,10 +177,25 @@ fn leaf(id: i32, label: &str) -> Result<OwnedValue, zbus::zvariant::Error> {
     ))))
 }
 
-fn layout() -> Result<LayoutNode, zbus::zvariant::Error> {
-    let show = leaf(pure::SHOW_APPS_ITEM, pure::DEFAULT_SHOW_APPS)?;
-    let quit = leaf(pure::QUIT_ITEM, pure::DEFAULT_QUIT)?;
-    Ok(LayoutNode(0, props(""), vec![show, quit]))
+fn separator(id: i32) -> Result<OwnedValue, zbus::zvariant::Error> {
+    owned(Value::from(Structure::from((
+        id,
+        separator_props(),
+        Vec::<OwnedValue>::new(),
+    ))))
+}
+
+fn layout(labels: &Labels) -> Result<LayoutNode, zbus::zvariant::Error> {
+    let show = leaf(pure::SHOW_APPS_ITEM, &labels.apps)?;
+    let settings = leaf(pure::SHOW_SETTINGS_ITEM, &labels.settings)?;
+    // The separator carries an id too (ids must be unique); it never clicks.
+    let separator = separator(SEPARATOR_ITEM)?;
+    let quit = leaf(pure::QUIT_ITEM, &labels.quit)?;
+    Ok(LayoutNode(
+        0,
+        props(""),
+        vec![show, settings, separator, quit],
+    ))
 }
 
 fn failed(error: zbus::zvariant::Error) -> zbus::fdo::Error {
@@ -179,7 +213,7 @@ impl MenuIface {
         if parent_id != 0 {
             return Err(zbus::fdo::Error::Failed("no such menu id".into()));
         }
-        Ok((1, layout().map_err(failed)?))
+        Ok((1, layout(&self.labels).map_err(failed)?))
     }
 
     /// Per the dbusmenu spec: `(u revision, a(ia{sv}))`.
@@ -193,14 +227,18 @@ impl MenuIface {
     )> {
         let nodes = ids
             .iter()
-            .filter(|id| **id == pure::SHOW_APPS_ITEM || **id == pure::QUIT_ITEM)
+            .filter(|id| {
+                **id == pure::SHOW_APPS_ITEM
+                    || **id == pure::SHOW_SETTINGS_ITEM
+                    || **id == pure::QUIT_ITEM
+            })
             .map(|id| {
                 (
                     *id,
-                    props(if *id == pure::SHOW_APPS_ITEM {
-                        pure::DEFAULT_SHOW_APPS
-                    } else {
-                        pure::DEFAULT_QUIT
+                    props(match *id {
+                        pure::SHOW_APPS_ITEM => &self.labels.apps,
+                        pure::SHOW_SETTINGS_ITEM => &self.labels.settings,
+                        _ => &self.labels.quit,
                     }),
                 )
             })
@@ -264,7 +302,17 @@ async fn export(
         .await
         .map_err(to_io)?;
     server
-        .at(menu_path.as_str(), MenuIface { clicks })
+        .at(
+            menu_path.as_str(),
+            MenuIface {
+                clicks,
+                labels: Labels {
+                    apps: prepared.show_apps_label.clone(),
+                    settings: prepared.show_settings_label.clone(),
+                    quit: prepared.quit_label.clone(),
+                },
+            },
+        )
         .await
         .map_err(to_io)?;
     let watcher = WatcherProxy::new(conn).await.map_err(to_io)?;
@@ -363,8 +411,9 @@ mod tests {
                 height: 1,
             },
             tooltip: "Alef Broker".into(),
-            show_apps_label: "Список приложений".into(),
-            quit_label: "Выход".into(),
+            show_apps_label: "Apps".into(),
+            show_settings_label: "Settings".into(),
+            quit_label: "Quit".into(),
             commands,
         }
     }

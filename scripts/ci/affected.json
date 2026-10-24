@@ -94,6 +94,18 @@
       "scenarios": ["apps-ui"]
     },
     {
+      "glob": "backend/crates/alef/apps/settings.rs",
+      "scenarios": ["settings-ui"]
+    },
+    {
+      "glob": "backend/crates/alef/assets/settings/**",
+      "scenarios": ["settings-ui"]
+    },
+    {
+      "glob": "tests/e2e/apps/consent/settings-ui.mjs",
+      "scenarios": ["settings-ui"]
+    },
+    {
       "glob": "backend/crates/alef/assets/apps/**",
       "scenarios": ["apps-ui"]
     },
