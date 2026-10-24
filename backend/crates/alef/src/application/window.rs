@@ -13,7 +13,9 @@ use alef_runtime::{Bridge, BridgeOptions, Commands, WindowOptions};
 use serde_json::{json, Value};
 
 use crate::application::trust::TrustQuestion;
-use crate::consent::ask::{self, exchange_folder, validate, write_answer, Answer, Request};
+use crate::consent::ask::{
+    self, exchange_folder, validate, write_answer, Answer, AppSummary, Request,
+};
 
 const PAGE: [(&str, &str); 3] = [
     ("index.html", include_str!("../../assets/trust/index.html")),
@@ -67,6 +69,61 @@ fn install(
         })
 }
 
+/// End-to-end runs only (`ALEF_E2E=1`): the answer to the trust question, accept or refuse.
+#[cfg(feature = "e2e")]
+pub const TRUST_VARIABLE: &str = "ALEF_E2E_TRUST";
+
+/// Who answers the trust question.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrustAsker {
+    /// A fixed answer (end-to-end runs).
+    #[cfg(any(test, feature = "e2e"))]
+    Scripted(bool),
+    /// The user, in the runtime-owned trust window.
+    Window,
+}
+
+#[cfg(feature = "e2e")]
+pub(crate) fn scripted_answer(
+    read: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<bool>, String> {
+    if read("ALEF_E2E").is_some_and(|value| value == "1") {
+        if let Some(text) = read(TRUST_VARIABLE) {
+            return match text.as_str() {
+                "accept" => Ok(Some(true)),
+                "refuse" => Ok(Some(false)),
+                other => Err(format!("{TRUST_VARIABLE}: not accept or refuse: {other:?}")),
+            };
+        }
+    }
+    Ok(None)
+}
+
+/// The scripted table applies only in an end-to-end run; otherwise the window asks.
+pub fn asker_from_environment() -> Result<TrustAsker, String> {
+    #[cfg(feature = "e2e")]
+    if let Some(answer) = scripted_answer(&|name| std::env::var(name).ok())? {
+        return Ok(TrustAsker::Scripted(answer));
+    }
+    Ok(TrustAsker::Window)
+}
+
+impl TrustAsker {
+    pub fn ask(&self, app: &AppSummary, question: &TrustQuestion) -> Result<bool, String> {
+        match self {
+            #[cfg(any(test, feature = "e2e"))]
+            Self::Scripted(answer) => Ok(*answer),
+            Self::Window => {
+                ask_in_window(&request_for_trust(app, question)).and_then(|answered| match answered
+                {
+                    Some(answer) => Ok(answer),
+                    None => Err("the trust window was closed without a decision".to_owned()),
+                })
+            }
+        }
+    }
+}
+
 /// The trust question of one package, as the window asks it: no rights, only who signs the
 /// application.
 pub fn request_for_trust(app: &ask::AppSummary, question: &TrustQuestion) -> Request {
@@ -74,13 +131,21 @@ pub fn request_for_trust(app: &ask::AppSummary, question: &TrustQuestion) -> Req
         app: app.clone(),
         rights: Vec::new(),
         trust: Some(match question {
-            TrustQuestion::Signed { fingerprint } => ask::TrustAsk {
+            TrustQuestion::Signed {
+                fingerprint,
+                size_bytes,
+            } => ask::TrustAsk {
                 fingerprint: Some(fingerprint.clone()),
                 archive_digest: None,
+                size_bytes: Some(*size_bytes),
             },
-            TrustQuestion::Unsigned { archive_digest } => ask::TrustAsk {
+            TrustQuestion::Unsigned {
+                archive_digest,
+                size_bytes,
+            } => ask::TrustAsk {
                 fingerprint: None,
                 archive_digest: Some(archive_digest.clone()),
+                size_bytes: Some(*size_bytes),
             },
         }),
         #[cfg(feature = "e2e")]
@@ -229,28 +294,61 @@ mod tests {
             &app(),
             &TrustQuestion::Signed {
                 fingerprint: "ab".to_owned(),
+                size_bytes: 0,
             },
         );
         assert!(signed.rights.is_empty());
         let TrustAsk {
             fingerprint,
             archive_digest,
+            size_bytes,
         } = signed.trust.expect("a trust question");
         assert_eq!(fingerprint, Some("ab".to_owned()));
         assert_eq!(archive_digest, None);
+        assert_eq!(size_bytes, Some(0));
 
         let unsigned = request_for_trust(
             &app(),
             &TrustQuestion::Unsigned {
                 archive_digest: "cd".to_owned(),
+                size_bytes: 149_200_000,
             },
         );
         assert!(unsigned.rights.is_empty());
         let TrustAsk {
             fingerprint,
             archive_digest,
+            size_bytes,
         } = unsigned.trust.expect("a trust question");
         assert_eq!(fingerprint, None);
         assert_eq!(archive_digest, Some("cd".to_owned()));
+        assert_eq!(size_bytes, Some(149_200_000));
+    }
+
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn the_scripted_trust_answer_is_read_only_in_an_end_to_end_run() {
+        fn pairs(
+            table: &'static [(&'static str, &'static str)],
+        ) -> impl Fn(&str) -> Option<String> {
+            move |name| {
+                table
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_owned())
+            }
+        }
+        let silent = pairs(&[(TRUST_VARIABLE, "accept")]);
+        assert_eq!(scripted_answer(&silent).unwrap(), None);
+        let off = pairs(&[("ALEF_E2E", "0"), (TRUST_VARIABLE, "accept")]);
+        assert_eq!(scripted_answer(&off).unwrap(), None);
+        let accept = pairs(&[("ALEF_E2E", "1"), (TRUST_VARIABLE, "accept")]);
+        assert_eq!(scripted_answer(&accept).unwrap(), Some(true));
+        let refuse = pairs(&[("ALEF_E2E", "1"), (TRUST_VARIABLE, "refuse")]);
+        assert_eq!(scripted_answer(&refuse).unwrap(), Some(false));
+        let nothing = pairs(&[("ALEF_E2E", "1")]);
+        assert_eq!(scripted_answer(&nothing).unwrap(), None);
+        let other = pairs(&[("ALEF_E2E", "1"), (TRUST_VARIABLE, "maybe")]);
+        assert!(scripted_answer(&other).is_err());
     }
 }

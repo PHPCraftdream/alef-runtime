@@ -7,10 +7,10 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import { crc32, deflateRawSync, inflateRawSync } from 'node:zlib';
 
-import { here, startApp, transpileApi, verdictOf } from '../../lib.mjs';
+import { extractedMembers, here, startApp, transpileApi, verdictOf } from '../../lib.mjs';
 import { createKey, pack } from '../../../../packages/tools/src/index.mjs';
 
 const ID = 'org.alef.e2e.package';
@@ -243,6 +243,38 @@ const corruptByte = (bytes, name, index) => patchEntry(bytes, name, data => {
   data[index] ^= 0xff;
   return data;
 });
+
+/** The sha256 of every member of a built .alef archive, as {name, hash}. */
+function packageMemberHashes(bytes) {
+  const members = [];
+  for (const [name, record] of centralDirectory(bytes)) {
+    const local = record.localAt;
+    if (bytes.readUInt32LE(local) !== 0x04034b50) throw new Error('no local signature');
+    const dataAt = local + 30 + bytes.readUInt16LE(local + LOCAL_NAME_LENGTH);
+    const data = record.method === 0 ? bytes.subarray(dataAt, dataAt + record.size)
+      : inflateRawSync(bytes.subarray(dataAt, dataAt + record.compressedSize));
+    members.push({ name, hash: createHash('sha256').update(data).digest('hex') });
+  }
+  return members;
+}
+
+/** Every file under `root` as {path, hash}: bounded traversal for the no-extract proof. */
+function collectFiles(root) {
+  const files = [];
+  if (!existsSync(root)) return files;
+  let remaining = 5000;
+  const visit = (folder, depth) => {
+    if (depth > 32) throw new Error('no-extract traversal exceeded 32 levels');
+    for (const entry of readdirSync(folder, { withFileTypes: true })) {
+      if (--remaining < 0) throw new Error('no-extract traversal exceeded 5000 entries');
+      const path = join(folder, entry.name);
+      if (entry.isDirectory()) visit(path, depth + 1);
+      else if (entry.isFile()) files.push({ path, hash: createHash('sha256').update(readFileSync(path)).digest('hex') });
+    }
+  };
+  visit(root, 0);
+  return files;
+}
 
 export function packageScenarios({ exe, verbose, timeoutMs }) {
   /** The XDG bases, set by the scenario and shared by every home so the isolation comparison stays meaningful. */
@@ -627,6 +659,79 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
         problems.push(error.message);
       } finally {
         for (const path of created) rmSync(path, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
+      }
+      return { problems, lines: [] };
+    },
+
+    // Proof that a signed run extracts nothing to disk: every file the runtime leaves under the
+    // redirected temp, the isolated ALEF_HOME and the isolated ALEF_APP_HOME is hashed and matched
+    // against every member of the archive by content and by basename. Service state (the trust pin
+    // `<sha256(id)>.ktav`, consent records, the app store, window state, the Servo profile) carries
+    // member-unrelated names, so no allowlist is needed.
+    'no-extract': async () => {
+      const problems = [];
+      const expect = (what, condition, detail = '') => {
+        console.log(`    ${condition ? 'ok  ' : 'FAIL'} ${what}${condition ? '' : `: ${detail}`}`);
+        if (!condition) problems.push(`${what}: ${detail}`);
+      };
+      const dir = mkdtempSync(join(os.tmpdir(), 'alef-e2e-noextract-'));
+      const tmp = join(dir, 'tmp'); // TMP/TEMP/TMPDIR and LOCALAPPDATA of the child
+      const home = join(dir, 'home'); // ALEF_HOME of the child
+      const appHome = join(dir, 'app-home'); // ALEF_APP_HOME: honored when absolute (plan/mod.rs), so the app data is `<appHome>/data/<id>` on every platform, darwin included
+      const keyHome = join(dir, 'keys');
+      try {
+        for (const folder of [tmp, home, appHome, keyHome]) mkdirSync(folder, { recursive: true });
+        const xdgEnv = process.platform === 'linux'
+          ? Object.fromEntries(['data', 'config', 'cache'].map(name => {
+              const folder = join(dir, name);
+              mkdirSync(folder, { recursive: true });
+              return [{ data: 'XDG_DATA_HOME', config: 'XDG_CONFIG_HOME', cache: 'XDG_CACHE_HOME' }[name], folder];
+            }))
+          : {};
+        // The site mirrors buildSite of the `package` scenario, with its own key home only.
+        await createKey('a', { home: keyHome });
+        const api = transpileApi();
+        const publicRoot = join(dir, 'site', 'dist');
+        mkdirSync(publicRoot, { recursive: true });
+        writeFileSync(join(dir, 'site', 'alef.ktav'), manifest());
+        writeFileSync(join(publicRoot, 'index.html'), INDEX);
+        writeFileSync(join(publicRoot, 'page.js'), PAGE);
+        writeFileSync(join(publicRoot, 'probe.txt'), PROBE);
+        writeFileSync(join(publicRoot, 'blob.bin'), blob());
+        copyFileSync(join(here, 'harness.js'), join(publicRoot, 'harness.js'));
+        for (const folder of ['src', 'types']) cpSync(join(api, folder), join(publicRoot, folder), { recursive: true });
+        writeFileSync(join(publicRoot, 'targets.json'), JSON.stringify({ probe: PROBE, mode: 'first', key: 'visit' }));
+        const pkg = join(dir, 'no-extract.alef');
+        await pack(join(dir, 'site'), { home: keyHome, key: 'a', out: pkg });
+
+        const bytes = readFileSync(pkg);
+        const before = createHash('sha256').update(bytes).digest('hex');
+        const members = packageMemberHashes(bytes);
+
+        // First launch: the e2e trust answer creates the pin (the intended size-display run).
+        const run = await runPage(pkg, home, [], {
+          ALEF_E2E: '1', ALEF_E2E_TRUST: 'accept', ALEF_E2E_CONSENT: '*=allow',
+          TMPDIR: tmp, TMP: tmp, TEMP: tmp, ALEF_APP_HOME: appHome,
+          ...xdgEnv, ...(process.platform === 'win32' ? { LOCALAPPDATA: tmp } : {}),
+        });
+        expect('the first-launch run of the signed package passes and exits by itself',
+          run.code === 0 && verdictOf(run.lines)?.[1] === 'PASS', `exit ${run.code}: ${verdictOf(run.lines)?.[2] ?? 'no verdict'}`);
+        const appdata = reported(run.lines, 'appdata');
+        expect('the app data of the page is inside the isolated app home',
+          appdata !== undefined && resolve(appdata).startsWith(join(resolve(appHome), 'data') + sep), String(appdata));
+
+        // Nothing on disk matches any member by content or basename.
+        const files = [tmp, home, appHome].flatMap(root => collectFiles(root));
+        const offenders = extractedMembers(files, members);
+        expect('no package member appears on disk by content or name', offenders.length === 0,
+          offenders.map(({ path, matched }) => `${path} (${matched})`).join('; '));
+        expect('the package file is byte-for-byte unchanged after the run',
+          createHash('sha256').update(readFileSync(pkg)).digest('hex') === before, 'the archive bytes changed');
+        console.log(`    no-extract: scanned ${files.length} files under 3 roots, 0 matched ${members.length} members`);
+      } catch (error) {
+        problems.push(error.message);
+      } finally {
         rmSync(dir, { recursive: true, force: true });
       }
       return { problems, lines: [] };

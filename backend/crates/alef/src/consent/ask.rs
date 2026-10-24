@@ -66,6 +66,9 @@ pub struct TrustAsk {
     /// The SHA-256 digest of the exact archive bytes of an unsigned package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_digest: Option<String>,
+    /// The exact size of the package in bytes, when it is a package question.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -599,6 +602,7 @@ mod tests {
             trust: Some(TrustAsk {
                 fingerprint: Some(fp),
                 archive_digest: None,
+                size_bytes: None,
             }),
             #[cfg(feature = "e2e")]
             automation: None,

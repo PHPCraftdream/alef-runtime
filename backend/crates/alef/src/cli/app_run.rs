@@ -198,6 +198,7 @@ pub(crate) async fn run_package(
         .icon_png
         .clone()
         .unwrap_or_else(|| DEFAULT_ICON.to_vec());
+    let package_size = prepared.size_bytes;
     let Prepared {
         manifest,
         package,
@@ -243,6 +244,7 @@ pub(crate) async fn run_package(
             TrustInputs {
                 trust_key,
                 allow_unsigned,
+                package_size,
             },
         )),
         installed,

@@ -192,12 +192,13 @@ test('a_changed_docs_api_segments_md_runs_the_api_segmentation_tests_but_other_d
   assert.deepEqual(q.js, []);
 });
 
-test('a_change_in_one_leaf_crate_tests_only_that_crate_its_dependents_and_linux', () => {
+test('a_change_in_one_leaf_crate_tests_only_that_crate_its_dependents_and_the_package_e2e', () => {
   const p = plan(['backend/crates/alef-package/src/lib.rs']);
   assert.equal(p.full, false);
   assert.deepEqual(p.crates, ['alef', 'alef-package', 'alef-runtime']);
   assert.equal(p.crates_all, false);
-  assert.deepEqual(p.os, ['ubuntu-24.04']);
+  assert.equal(p.e2e, 'no-extract,package');
+  assert.deepEqual(p.os, data.runners_all);
 });
 
 test('a_change_in_alef_core_tests_every_crate_in_the_workspace', () => {
@@ -304,12 +305,12 @@ test('the_cli_parses_full_false_as_an_affected_plan_not_full', () => {
   assert.equal(JSON.parse(out.stdout.slice(out.stdout.indexOf('{'))).full, false);
 });
 
-test('applyOverrides_on_a_affected_plan_replaces_the_crate_list_and_sets_crates_all_false_and_keeps_linux', () => {
+test('applyOverrides_on_a_affected_plan_replaces_the_crate_list_and_sets_crates_all_false_and_keeps_the_os_matrix', () => {
   const p = plan(['backend/crates/alef-package/src/lib.rs']);
   const out = applyOverrides(p, { crates: ' alef-modules, alef-modules ' }, data.runners_all);
   assert.deepEqual(out.crates, ['alef-modules']);
   assert.equal(out.crates_all, false);
-  assert.deepEqual(out.os, ['ubuntu-24.04']);
+  assert.deepEqual(out.os, data.runners_all);
 });
 
 test('applyOverrides_with_an_empty_crates_value_leaves_the_plan_untouched_except_e2e_handling', () => {

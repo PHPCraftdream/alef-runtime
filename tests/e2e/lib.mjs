@@ -6,7 +6,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync,
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const here = dirname(fileURLToPath(import.meta.url));
@@ -18,6 +18,21 @@ export function appDataOf(id) {
   if (process.platform === 'win32') return join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), id);
   if (process.platform === 'darwin') return join(home, 'Library', 'Application Support', id);
   return join(process.env.XDG_DATA_HOME ?? join(home, '.local', 'share'), id);
+}
+
+/**
+ * Pure detector behind the `no-extract` e2e scenario: which scanned files ({path, hash}) match a
+ * package member ({name, hash}) by content hash or by basename. Returns the offenders only.
+ */
+export function extractedMembers(files, members) {
+  const hashes = new Map(members.map(member => [member.hash, basename(member.name)]));
+  const names = new Set(members.map(member => basename(member.name)));
+  const found = [];
+  for (const file of files) {
+    const matched = hashes.get(file.hash) ?? (names.has(basename(file.path)) ? basename(file.path) : undefined);
+    if (matched !== undefined) found.push({ path: file.path, matched });
+  }
+  return found;
 }
 
 export const exeName = process.platform === 'win32' ? '.exe' : '';

@@ -18,8 +18,6 @@ use sha2::{Digest, Sha256};
 
 use crate::plan::MANIFEST_FILE;
 
-/// An archive larger than this is refused before its bytes are read.
-pub const ARCHIVE_LIMIT: u64 = 256 * 1024 * 1024;
 /// Any single package entry larger than this is refused before it is read.
 pub const ASSET_LIMIT: u64 = 64 * 1024 * 1024;
 /// The manifest is metadata: a much tighter bound than an asset.
@@ -67,6 +65,8 @@ pub struct Prepared {
     pub icon_png: Option<Vec<u8>>,
     /// Hex of the raw signing key of the package; `None` when it is unsigned.
     pub public_key: Option<String>,
+    /// The exact size of the package file in bytes.
+    pub size_bytes: u64,
     pub package: alef_package::Package<Cursor<Vec<u8>>>,
     pub selected_root: String,
 }
@@ -98,6 +98,22 @@ impl Prepared {
     /// The raw public key of the package signer as hex, `None` when it is unsigned.
     pub fn public_key_hex(&self) -> Option<&str> {
         self.public_key.as_deref()
+    }
+}
+
+/// Human-readable size: whole bytes below 1 KiB, then one decimal in KiB/MB/GB/TB (1024-based).
+pub fn format_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut unit = 0usize;
+    let mut value = bytes as f64;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -185,36 +201,31 @@ fn prepare_snapshot(
     runtime_store: &Path,
     check_runtime: bool,
 ) -> Result<(Prepared, Option<Vec<u8>>), LoadFailure> {
-    let file = std::fs::File::open(path).map_err(io_failure)?;
+    let mut file = std::fs::File::open(path).map_err(io_failure)?;
     let meta = file.metadata().map_err(io_failure)?;
     if !meta.is_file() {
         return Err(not_a_package(path));
     }
-    if meta.len() > ARCHIVE_LIMIT {
-        return Err(run_limit(format!(
-            "the archive exceeds {ARCHIVE_LIMIT} bytes"
-        )));
-    }
+    let size = meta.len();
+    let Ok(need) = usize::try_from(size) else {
+        return Err(run_limit(
+            "the package is larger than the address space of this machine",
+        ));
+    };
     let mut bytes = Vec::new();
-    if install {
-        bytes
-            .try_reserve_exact(usize::try_from(meta.len()).unwrap_or(usize::MAX))
-            .map_err(|_| run_limit("cannot allocate the bounded installation snapshot"))?;
-    }
-    file.take(ARCHIVE_LIMIT + 1)
-        .read_to_end(&mut bytes)
-        .map_err(io_failure)?;
-    if bytes.len() as u64 > ARCHIVE_LIMIT {
-        return Err(run_limit(format!(
-            "the archive exceeds {ARCHIVE_LIMIT} bytes"
-        )));
-    }
+    bytes
+        .try_reserve_exact(need)
+        .map_err(|_| run_limit(format!("cannot allocate {size} bytes for the package")))?;
+    file.read_to_end(&mut bytes).map_err(io_failure)?;
     let archive_digest = format!("{:x}", Sha256::digest(&bytes));
     let retained_bytes = if install {
         let mut snapshot = Vec::new();
-        snapshot
-            .try_reserve_exact(bytes.len())
-            .map_err(|_| run_limit("cannot allocate the bounded installation snapshot"))?;
+        snapshot.try_reserve_exact(bytes.len()).map_err(|_| {
+            run_limit(format!(
+                "cannot allocate {} bytes for the package",
+                bytes.len()
+            ))
+        })?;
         snapshot.extend_from_slice(&bytes);
         Some(snapshot)
     } else {
@@ -334,6 +345,7 @@ fn prepare_snapshot(
             archive_digest,
             icon_png,
             public_key,
+            size_bytes: size,
             package,
             selected_root,
         },
@@ -758,6 +770,31 @@ mod tests {
             ("icon.png", &icon),
         ]));
         assert_eq!(failure.category, Some("PACKAGE_RUN_LIMIT"));
+    }
+
+    #[test]
+    fn format_size_is_human_readable_and_never_overflows() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(1023), "1023 B");
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1024 * 1024), "1.0 MB");
+        assert_eq!(format_size(149_200_000), "142.3 MB");
+        assert_eq!(format_size(5_798_205_824), "5.4 GB");
+        assert_eq!(format_size(u64::MAX), "16777216.0 TB");
+    }
+
+    #[test]
+    fn the_prepared_package_reports_its_exact_size() {
+        let files = default_files();
+        let bytes = support::zip(&referenced(&files));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("app.alef");
+        std::fs::write(&path, &bytes).expect("write the package");
+        let prepared = match load(&path).expect("a package") {
+            ApplicationSource::Package(prepared) => *prepared,
+            ApplicationSource::Directory { .. } => panic!("expected a package"),
+        };
+        assert_eq!(prepared.size_bytes, bytes.len() as u64);
     }
 
     #[test]
