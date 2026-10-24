@@ -17,7 +17,7 @@ fn unsupported(what: &str) -> String {
 }
 
 /// DOS date and time (local, by ZIP convention) for a Unix timestamp in seconds.
-fn dos_datetime(secs: u64) -> (u16, u16) {
+pub(crate) fn dos_datetime(secs: u64) -> (u16, u16) {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
     // Howard Hinnant's civil_from_days: valid for the whole unsigned timestamp range here.

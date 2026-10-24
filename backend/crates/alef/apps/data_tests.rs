@@ -316,7 +316,7 @@ fn import_rejects_entry_count_and_expansion_limits() {
     // More files than the limit: one synthetic manifest with too many entries.
     let mut files = Vec::new();
     for i in 0..(super::MAX_FILES + 1) {
-        files.push(entry(format!("f/{i}.txt"), 1, "aa"));
+        files.push(entry(&format!("f/{i}.txt"), 1, "aa"));
     }
     let dest = scratch.path().join("count.zip");
     build_archive(
@@ -330,7 +330,7 @@ fn import_rejects_entry_count_and_expansion_limits() {
     // A highly compressible entry above the ratio floor looks like a bomb.
     let bomb = scratch.path().join("bomb.zip");
     let mut writer = ZipWriter::new(Vec::new(), 1_800_000_000);
-    let zeros = vec![0u8; super::RATIO_FLOOR * 2];
+    let zeros = vec![0u8; (super::RATIO_FLOOR * 2) as usize];
     writer.add("zeros.bin", &zeros).unwrap();
     writer
         .add(
@@ -361,7 +361,6 @@ fn a_flipped_byte_refuses_the_whole_import_and_leaves_the_data_alone() {
         error.contains("integrity") || error.contains("checksum"),
         "error: {error}"
     );
-    assert!(error.is_err(), "the tampered archive was accepted");
     assert_eq!(fs::read(data.join("a.txt")).unwrap(), b"original");
     assert!(!data.with_file_name("data.before-import").exists());
 }
@@ -498,8 +497,11 @@ fn import_into_a_fresh_directory_needs_no_backup() {
 
 #[test]
 fn dos_times_and_rfc3339_come_out_sane() {
-    assert_eq!(super::dos_datetime(0), (0, 0)); // before 1980 clamps to 1980-01-01
-    assert_eq!(super::dos_datetime(1_800_000_000), (0x5E2F, 0x4000)); // 2027-01-15 08:00:00 UTC
+    assert_eq!(crate::apps::zip::dos_datetime(0), (0, 0)); // before 1980 clamps to 1980-01-01
+    assert_eq!(
+        crate::apps::zip::dos_datetime(1_800_000_000),
+        (0x5E2F, 0x4000)
+    ); // 2027-01-15 08:00:00 UTC
     assert_eq!(super::rfc3339(0), "1970-01-01T00:00:00Z");
     assert_eq!(super::rfc3339(1_792_800_000), "2026-10-24T00:00:00Z");
 }
