@@ -536,3 +536,28 @@ fn data_stats_defaults_are_empty() {
     assert_eq!(stats.bytes, 0);
     assert!(stats.backup.is_none());
 }
+
+#[test]
+fn a_held_shared_lock_makes_the_import_see_a_running_application() {
+    let scratch = Scratch::new("lock");
+    let data = scratch.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    assert!(!super::data_lock_held(&data));
+    let held = super::hold_running(&data).unwrap();
+    assert!(super::data_lock_held(&data));
+    drop(held);
+    assert!(!super::data_lock_held(&data));
+}
+
+#[test]
+fn the_web_profile_stays_with_the_application_through_an_import() {
+    let scratch = Scratch::new("profile");
+    let data = scratch.path().join("data");
+    write_file(&data.join("a.txt"), b"original");
+    let dest = export(&data, "org.example.app", &scratch, "profile");
+    write_file(&data.join("servo/cookies"), b"kept");
+    write_file(&data.join("a.txt"), b"changed");
+    import_never_running(&data, &dest).unwrap();
+    assert_eq!(fs::read(data.join("a.txt")).unwrap(), b"original");
+    assert_eq!(fs::read(data.join("servo/cookies")).unwrap(), b"kept");
+}

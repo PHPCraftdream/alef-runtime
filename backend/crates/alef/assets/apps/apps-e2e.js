@@ -3,7 +3,7 @@ import { call, ready, settled } from './apps.js';
 const emit = data => call('e2e.report', { line: JSON.stringify(data) });
 const need = (node, name) => { if (!node) throw new Error(`missing UI control: ${name}`); return node; };
 // Native dialogs are answered from ALEF_E2E_DIALOGS by the runtime host: a JSON array like
-// [{"save":["C:/tmp/out.zip"]},{"open":["C:/tmp/in.zip"]}] — exactly one answer per dialog
+// [{"save":"C:/tmp/out.zip"},{"open":["C:/tmp/in.zip"]}] — exactly one answer per dialog
 // call, consumed in order (Save for export, Open for import).
 const waitFor = async (probe, ms = 10000) => {
   const deadline = Date.now() + ms;

@@ -33,6 +33,9 @@ use alef_runtime::{mark, Bridge, BridgeOptions, Commands, WindowOptions};
 use std::{ffi::OsString, path::PathBuf, time::Duration};
 use url::Url;
 
+/// The shared lock of the data folder, held until the process ends.
+static RUN_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
 /// Everything the one launch pipeline needs after the source is loaded and the plan derived.
 pub(crate) struct Run {
     process_args: Vec<OsString>,
@@ -385,6 +388,10 @@ pub(crate) async fn prepare_app(run: Run) -> Result<Result<PreparedApp, u8>, Fai
     let window_state = vars.app_data.join("window-state.ktav");
     // Servo profile root, before `vars` moves into the module context.
     let servo_profile = vars.app_data.join("servo");
+    // The shared lock beside the data folder tells `apps import` that an instance runs.
+    if let Ok(lock) = alef_launch::apps::data::hold_running(&vars.app_data) {
+        let _ = RUN_LOCK.set(lock);
+    }
     // Directory apps derive the origin label from the manifest id; packages from the
     // launcher-verified authority token. The label feeds both the entry URL and the
     // CSP-scoped origin, so a bad id must exit like any other manifest failure.

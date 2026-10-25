@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::{
     collections::HashSet,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -407,11 +407,54 @@ fn app_is_running(app_id: &str) -> bool {
     alef_modules::desktop::app::instance::is_running(app_id, &home, &cache.join(app_id))
 }
 
+/// The lock file next to the data folder (not inside it: the folder is renamed by an import).
+pub fn lock_path(data_dir: &Path) -> PathBuf {
+    let name = data_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    data_dir.with_file_name(format!("{name}.running.lock"))
+}
+
+fn open_lock(data_dir: &Path) -> io::Result<fs::File> {
+    let path = lock_path(data_dir);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::OpenOptions::new().create(true).write(true).open(path)
+}
+
+/// Taken by every running application for the life of its process (a shared lock, the operating
+/// system drops it with the process): `apps import` takes the exclusive one, so it refuses while
+/// any instance lives, whether or not the application asked for a single instance.
+pub fn hold_running(data_dir: &Path) -> io::Result<fs::File> {
+    let file = open_lock(data_dir)?;
+    match file.try_lock_shared() {
+        Ok(()) => Ok(file),
+        Err(fs::TryLockError::WouldBlock) => Err(io::ErrorKind::WouldBlock.into()),
+        Err(fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
+/// Whether some instance holds the shared lock of the data folder; an unreadable state counts as
+/// running (an import must not guess).
+fn data_lock_held(data_dir: &Path) -> bool {
+    let Ok(file) = open_lock(data_dir) else {
+        return true;
+    };
+    match file.try_lock() {
+        Ok(()) => false,
+        Err(_) => true,
+    }
+}
+
 /// Replaces the data directory of an application with the contents of an archive. The archive is
 /// fully inspected and checksum-verified first; the extraction goes into a sibling staging
 /// directory and the old data are kept at `<data_dir>.before-import`.
 pub fn import_app_data(data_dir: &Path, app_id: &str, archive: &Path) -> Result<DataStats, String> {
-    import_with(data_dir, app_id, archive, || app_is_running(app_id))
+    import_with(data_dir, app_id, archive, || {
+        data_lock_held(data_dir) || app_is_running(app_id)
+    })
 }
 
 fn import_with(
@@ -458,7 +501,13 @@ fn import_with(
         remove_path(&backup)?;
         fs::rename(data_dir, &backup)
             .map_err(|error| format!("cannot keep the old data aside: {error}"))?;
+        // The web profile of the application is not archived: it stays with the application.
+        let carried = backup.join("servo").is_dir()
+            && fs::rename(backup.join("servo"), staging.join("servo")).is_ok();
         if let Err(error) = swap_in(&staging, data_dir, &backup) {
+            if carried {
+                let _ = fs::rename(staging.join("servo"), data_dir.join("servo"));
+            }
             let _ = fs::remove_dir_all(&staging);
             return Err(error);
         }

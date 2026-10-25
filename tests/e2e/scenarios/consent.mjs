@@ -630,7 +630,7 @@ ${mode === 'hold' ? "await report('appsdata-holding');\n" : `await api.store.set
           env: {
             ...process.env, ALEF_E2E: '1', ...environment,
             ALEF_E2E_APPS_UI: JSON.stringify(steps),
-            ALEF_E2E_DIALOGS: JSON.stringify([{ save: [ui] }, { open: [ui] }, { open: [ui] }]),
+            ALEF_E2E_DIALOGS: JSON.stringify([{ save: ui }, { open: [ui] }, { open: [ui] }]),
           },
         });
         try {
