@@ -218,8 +218,14 @@ async fn pick_import(
     let Some(path) = paths.into_iter().next() else {
         return Ok(json!({ "path": serde_json::Value::Null }));
     };
-    let stats =
-        alef_launch::apps::data::inspect_archive(Path::new(&path), &entry.id).map_err(invalid)?;
+    let archive = path.clone();
+    let app_id = entry.id.clone();
+    let stats = tokio::task::spawn_blocking(move || {
+        alef_launch::apps::data::inspect_archive(Path::new(&archive), &app_id)
+    })
+    .await
+    .map_err(internal)?
+    .map_err(invalid)?;
     Ok(json!({ "path": path, "files": stats.files, "bytes": stats.bytes }))
 }
 fn import_data(
@@ -295,7 +301,15 @@ fn install_commands(
             let home = home.clone();
             move |_, args| {
                 let home = home.clone();
-                async move { Ok(Reply::Json(export_data(&home, &store(&home), args)?)) }
+                async move {
+                    // Packing the data of an application takes seconds: never on the bus thread.
+                    let value = tokio::task::spawn_blocking(move || {
+                        export_data(&home, &store(&home), args)
+                    })
+                    .await
+                    .map_err(internal)??;
+                    Ok(Reply::Json(value))
+                }
             }
         })?;
     registry
@@ -304,7 +318,14 @@ fn install_commands(
             let home = home.clone();
             move |_, args| {
                 let home = home.clone();
-                async move { Ok(Reply::Json(import_data(&home, &store(&home), args)?)) }
+                async move {
+                    let value = tokio::task::spawn_blocking(move || {
+                        import_data(&home, &store(&home), args)
+                    })
+                    .await
+                    .map_err(internal)??;
+                    Ok(Reply::Json(value))
+                }
             }
         })?;
     registry

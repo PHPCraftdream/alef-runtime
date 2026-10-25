@@ -37,10 +37,12 @@ const VARIABLES = { ALEF_E2E_ENV_ALLOWED: 'yes', ALEF_E2E_ENV_SUBSTITUTED: 'real
 const linesOf = text => text.split('\n').filter(Boolean);
 
 /** One hash of a whole folder: the sorted paths and the bytes and sizes of their files. */
-const dirHash = root => {
+const dirHash = (root, { skipProfile = false } = {}) => {
   const digest = createHash('sha256');
   const walk = prefix => {
     for (const entry of readdirSync(join(root, prefix), { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : 1)) {
+      // The web profile of a running application changes by itself and is not part of an archive.
+      if (skipProfile && prefix === '' && entry.name === 'servo') continue;
       const relative = `${prefix}${entry.name}`;
       if (entry.isDirectory()) { walk(`${relative}/`); continue; }
       const bytes = readFileSync(join(root, relative));
@@ -568,7 +570,8 @@ ${mode === 'hold' ? "await report('appsdata-holding');\n" : `await api.store.set
         await run('write');
         writeFileSync(join(data, 'note.txt'), 'alef apps-data note');
         expect('the data folder holds the store and the note', existsSync(join(data, 'store')) && existsSync(join(data, 'note.txt')), dirHash(data));
-        const original = dirHash(data);
+        const dataHash = folder => dirHash(folder, { skipProfile: true });
+        const original = dataHash(data);
 
         // Export: an archive that is not empty, and the data are untouched.
         const exported = cli(['apps', 'export', site, first]);
@@ -582,19 +585,19 @@ ${mode === 'hold' ? "await report('appsdata-holding');\n" : `await api.store.set
         const unconfirmed = cli(['apps', 'import', site, first]);
         expect('an import without --confirm-red is refused with exit 2', unconfirmed.code === 2, `exit ${unconfirmed.code}: ${unconfirmed.out}${unconfirmed.err}`);
         expect('the refusal names the way out', `${unconfirmed.out}${unconfirmed.err}`.includes('--confirm-red'), unconfirmed.out + unconfirmed.err);
-        expect('the data are unchanged after the refusal', dirHash(data) !== original && existsSync(join(data, 'extra.txt')), dirHash(data));
+        expect('the data are unchanged after the refusal', dataHash(data) !== original && existsSync(join(data, 'extra.txt')), dirHash(data));
 
         const confirmed = cli(['apps', 'import', site, first, '--confirm-red']);
         expect('the confirmed import succeeds', confirmed.code === 0 && confirmed.out.includes('Imported'), `${confirmed.code}: ${confirmed.out}${confirmed.err}`);
         expect('the replaced data are kept aside', confirmed.out.includes('Previous data kept in') && existsSync(`${data}.before-import`), confirmed.out);
-        expect('the import restored the exported data', dirHash(data) === original, dirHash(data));
+        expect('the import restored the exported data', dataHash(data) === original, dataHash(data));
 
         // The import refuses while the application is running.
-        const beforeRunning = dirHash(data);
         holding = await run('hold');
+        const beforeRunning = dataHash(data);
         const refused = cli(['apps', 'import', site, first, '--confirm-red']);
         expect('an import while the application runs is refused', refused.code !== 0 && /running/.test(`${refused.out}${refused.err}`), `${refused.code}: ${refused.out}${refused.err}`);
-        expect('the data are unchanged after the refusal of a running application', dirHash(data) === beforeRunning, dirHash(data));
+        expect('the data are unchanged after the refusal of a running application', dataHash(data) === beforeRunning, dataHash(data));
         holding.stop();
         const closed = await holding.waitForExit(30000);
         if (closed === undefined) problems.push('the holding application did not close');
@@ -618,6 +621,7 @@ ${mode === 'hold' ? "await report('appsdata-holding');\n" : `await api.store.set
 
         // The manager window: the same export and the red-confirmed import, the native dialogs
         // answered from ALEF_E2E_DIALOGS in order (three answers: save for the export, then two opens for the two import attempts).
+        const beforeUi = dataHash(data);
         const steps = [
           { select: DATA_ID }, { stability: DATA_ID },
           { export: DATA_ID }, { snapshot: 'exported' },
@@ -647,7 +651,7 @@ ${mode === 'hold' ? "await report('appsdata-holding');\n" : `await api.store.set
           expect('the window export wrote an archive', existsSync(ui) && statSync(ui).size > 0, ui);
           // Cross-check through the CLI: the archive of the window holds the exported data, and the
           // import that the window confirmed left them in place.
-          expect('the windowed import left the exported data in place', dirHash(data) === original, dirHash(data));
+          expect('the windowed import left the exported data in place', dataHash(data) === beforeUi, dataHash(data));
         } catch (error) { problems.push(`manager window: ${error.message}`); }
       } catch (error) { problems.push(error.message); }
       finally { holding?.stop(); rmSync(directory, { recursive: true, force: true }); }
