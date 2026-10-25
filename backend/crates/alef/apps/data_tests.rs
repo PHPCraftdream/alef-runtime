@@ -335,23 +335,31 @@ fn import_rejects_entry_count_and_expansion_limits() {
     );
     let error = import_never_running(&target, &dest).unwrap_err();
     assert!(error.contains("more than"), "error: {error}");
-    // A highly compressible entry above the ratio floor looks like a bomb.
-    let bomb = scratch.path().join("bomb.zip");
+    // A highly compressible entry is an application's preallocated file, not a bomb: it imports.
+    let zeros_zip = scratch.path().join("zeros.zip");
     let mut writer = ZipWriter::new(Vec::new(), 1_800_000_000);
-    let zeros = vec![0u8; (super::RATIO_FLOOR * 2) as usize];
-    writer.add("zeros.bin", &zeros).unwrap();
+    let zeros = vec![0u8; 24 << 20];
+    writer.add("store/0.jnl", &zeros).unwrap();
     writer
         .add(
             MANIFEST_NAME,
             &manifest_bytes(
                 "org.example.app",
-                vec![entry("zeros.bin", zeros.len() as u64, &"0".repeat(64))],
+                vec![entry(
+                    "store/0.jnl",
+                    zeros.len() as u64,
+                    &super::sha256_hex(&zeros),
+                )],
             ),
         )
         .unwrap();
-    fs::write(&bomb, writer.finish().unwrap()).unwrap();
-    let error = import_never_running(&target, &bomb).unwrap_err();
-    assert!(error.contains("expands too much"), "error: {error}");
+    fs::write(&zeros_zip, writer.finish().unwrap()).unwrap();
+    let fresh = scratch.path().join("fresh");
+    import_never_running(&fresh, &zeros_zip).unwrap();
+    assert_eq!(
+        fs::metadata(fresh.join("store/0.jnl")).unwrap().len(),
+        zeros.len() as u64
+    );
 }
 
 #[test]

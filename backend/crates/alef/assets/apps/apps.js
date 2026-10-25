@@ -117,36 +117,36 @@ function render(root, initial) {
       const status = el('p', { class: 'status', role: 'status' });
       const dataCheck = el('input', { type: 'checkbox' });
       const dataText = el('div', {});
-      const replaceButton = el('button', { type: 'button', text: 'Заменить данные' });
+      const replaceButton = el('button', { type: 'button', text: 'Replace data' });
       const dataConfirm = el('div', { class: 'confirm', hidden: true },
-        el('div', { text: 'Существующие данные приложения будут заменены. Прежние данные будут сохранены рядом в <dir>.before-import.' }),
+        el('div', { text: 'The existing data of the application will be replaced. The previous data are kept next to it in <dir>.before-import.' }),
         dataText,
-        el('label', {}, dataCheck, document.createTextNode('Я понимаю: данные приложения будут заменены.')),
+        el('label', {}, dataCheck, document.createTextNode('I understand: the data of the application will be replaced.')),
         replaceButton);
       let importPath = null;
       const showStatus = (text, error) => { status.textContent = text; status.className = error ? 'status error' : 'status'; };
       const hideConfirm = () => { dataConfirm.hidden = true; dataCheck.checked = false; importPath = null; };
-      const exportButton = el('button', { type: 'button', text: 'Экспорт данных', disabled: app.availability !== 'available' });
+      const exportButton = el('button', { type: 'button', text: 'Export data', disabled: app.availability !== 'available' });
       exportButton.addEventListener('click', async () => {
         begin(); exportButton.disabled = true; showStatus(''); hideConfirm();
         try {
           const pick = await call('runtime.apps.data.pickExport', { identity: app.identity });
           if (!pick.path) return;
           const result = await call('runtime.apps.data.export', { identity: app.identity, path: pick.path });
-          showStatus(`Экспортировано: ${result.files} файлов, ${result.bytes} байт`);
+          showStatus(`Exported: ${result.files} files, ${result.bytes} bytes`);
         } catch (error) {
           showStatus(error instanceof Error ? error.message : String(error), true);
         }
         finally { exportButton.disabled = app.availability !== 'available'; end(); }
       });
-      const importButton = el('button', { type: 'button', text: 'Импорт данных', disabled: app.availability !== 'available' });
+      const importButton = el('button', { type: 'button', text: 'Import data', disabled: app.availability !== 'available' });
       importButton.addEventListener('click', async () => {
         begin(); importButton.disabled = true; showStatus(''); hideConfirm();
         try {
           const pick = await call('runtime.apps.data.pickImport', { identity: app.identity });
           if (!pick.path) return;
           importPath = pick.path;
-          dataText.textContent = `${pick.files} файлов, ${pick.bytes} байт`;
+          dataText.textContent = `${pick.files} files, ${pick.bytes} bytes`;
           dataConfirm.hidden = false;
         } catch (error) {
           showStatus(error instanceof Error ? error.message : String(error), true);
@@ -156,10 +156,10 @@ function render(root, initial) {
       replaceButton.addEventListener('click', async () => {
         begin(); replaceButton.disabled = true; showStatus('');
         try {
-          if (!dataCheck.checked) throw new Error('Подтвердите замену данных флажком.');
+          if (!dataCheck.checked) throw new Error('Tick the box to confirm the replacement of the data.');
           const result = await call('runtime.apps.data.import', { identity: app.identity, path: importPath, confirm_red: true });
           hideConfirm();
-          showStatus(`Данные заменены: ${result.files} файлов, ${result.bytes} байт. Прежние данные: ${result.backup ?? '—'}`);
+          showStatus(`Data replaced: ${result.files} files, ${result.bytes} bytes. Previous data: ${result.backup ?? '—'}`);
         } catch (error) {
           showStatus(error instanceof Error ? error.message : String(error), true);
         }

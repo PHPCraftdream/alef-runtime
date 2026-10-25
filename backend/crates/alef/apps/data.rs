@@ -19,8 +19,6 @@ const FORMAT: u32 = 1;
 const MAX_FILES: usize = 100_000;
 const MAX_TOTAL: u64 = 64 << 30;
 const MAX_FILE: u64 = 4 << 30; // zip32 per-entry limit
-const RATIO: u64 = 1000;
-const RATIO_FLOOR: u64 = 10 << 20;
 
 /// What an export archived or an import replaced.
 #[derive(Debug, Clone, Default)]
@@ -223,14 +221,11 @@ fn inspect_bytes(bytes: &[u8], app_id: &str) -> Result<DataStats, String> {
             return Err(format!("the archive holds more than {MAX_FILES} files"));
         }
         let uncompressed = u64::from(entry.uncompressed_size);
-        let compressed = u64::from(entry.compressed_size);
         if uncompressed > MAX_FILE {
             return Err(format!("{} exceeds the 4 GiB entry limit", entry.name));
         }
-        let expands = compressed == 0 || uncompressed / compressed.max(1) > RATIO;
-        if expands && uncompressed > RATIO_FLOOR {
-            return Err(format!("{} expands too much (archive bomb?)", entry.name));
-        }
+        // No compression-ratio rule: the preallocated files of an application (a journal of zeros)
+        // compress a thousandfold. The limits above and the totals shown before the import bound it.
         total += uncompressed;
         if total > MAX_TOTAL {
             return Err("the archive expands above 64 GiB (archive bomb?)".into());

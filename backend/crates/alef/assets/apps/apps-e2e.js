@@ -14,6 +14,7 @@ const waitFor = async (probe, ms = 10000) => {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 };
+const statusError = () => { const node = document.querySelector('.status.error'); return node && node.textContent.trim() ? node.textContent : null; };
 const visibleStatus = () => { const node = document.querySelector('.status'); return node && !node.hidden && node.textContent.trim() ? node.textContent : null; };
 const visibleConfirm = () => { const node = document.querySelector('.confirm'); return node && !node.hidden ? node : null; };
 try {
@@ -39,15 +40,15 @@ try {
     if (step.export !== undefined) {
       const selected = ui.view?.selected();
       if (selected && !(selected.id.includes(step.export) || (selected.name ?? '').includes(step.export))) throw new Error(`selected ${selected.id} is not ${step.export}`);
-      const button = [...document.querySelectorAll('button')].find(node => node.textContent === 'Экспорт данных');
+      const button = [...document.querySelectorAll('button')].find(node => node.textContent === 'Export data');
       need(button, `export ${step.export}`).click();
-      await waitFor(() => (/Экспортировано: \d+/.test(visibleStatus() ?? '') ? visibleStatus() : null));
+      await waitFor(() => { if (statusError()) throw new Error(`export failed: ${statusError()}`); return /Exported: \d+/.test(visibleStatus() ?? '') ? visibleStatus() : null; });
       await emit({ type: 'check', name: 'export-ok', ok: true, text: visibleStatus() });
     }
     if (step.import !== undefined) {
       const selected = ui.view?.selected();
       if (selected && !(selected.id.includes(step.import) || (selected.name ?? '').includes(step.import))) throw new Error(`selected ${selected.id} is not ${step.import}`);
-      const button = [...document.querySelectorAll('button')].find(node => node.textContent === 'Импорт данных');
+      const button = [...document.querySelectorAll('button')].find(node => node.textContent === 'Import data');
       need(button, `import ${step.import}`).click();
       await waitFor(visibleConfirm);
       if (!step.confirm) {
@@ -55,9 +56,9 @@ try {
       } else {
         const check = need(visibleConfirm()?.querySelector('input[type=checkbox]'), 'import confirmation');
         check.checked = true; check.dispatchEvent(new Event('change', { bubbles: true }));
-        const replace = [...document.querySelectorAll('button')].find(node => node.textContent === 'Заменить данные');
+        const replace = [...document.querySelectorAll('button')].find(node => node.textContent === 'Replace data');
         need(replace, 'replace data').click();
-        await waitFor(() => (/Данные заменены: \d+/.test(visibleStatus() ?? '') ? visibleStatus() : null));
+        await waitFor(() => { if (statusError()) throw new Error(`import failed: ${statusError()}`); return /Data replaced: \d+/.test(visibleStatus() ?? '') ? visibleStatus() : null; });
         await emit({ type: 'check', name: 'import-ok', ok: true, text: visibleStatus() });
       }
     }

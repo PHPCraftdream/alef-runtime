@@ -150,7 +150,7 @@ fn resolve(
 }
 fn zip_filter() -> Vec<FileFilter> {
     vec![FileFilter {
-        name: "Архив данных Alef".to_owned(),
+        name: "Alef application data".to_owned(),
         extensions: vec!["zip".to_owned()],
     }]
 }
@@ -169,7 +169,7 @@ async fn pick_export(
 ) -> Result<serde_json::Value, AlefError> {
     let entry = resolve(home, store, identity)?;
     let call = UiCall::Dialog(DialogCall::Save(SaveOptions {
-        title: Some("Экспорт данных приложения".to_owned()),
+        title: Some("Export application data".to_owned()),
         filters: Some(zip_filter()),
         default_path: default_folder().map(|folder| {
             Path::new(&folder)
@@ -206,7 +206,7 @@ async fn pick_import(
 ) -> Result<serde_json::Value, AlefError> {
     let entry = resolve(home, store, identity)?;
     let call = UiCall::Dialog(DialogCall::Open(OpenOptions {
-        title: Some("Импорт данных приложения".to_owned()),
+        title: Some("Import application data".to_owned()),
         filters: Some(zip_filter()),
         multiple: Some(false),
         directory: Some(false),
