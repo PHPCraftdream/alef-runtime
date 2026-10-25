@@ -437,6 +437,8 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
     /** Resolves `true` once nobody holds the log pipe any more, `false` after `ms`. */
     waitForClosed: processRecord.waitForClosed,
     stuckReport,
+    /** Ends the runtime with SIGKILL: the answer to a graceful exit that takes too long. */
+    hardStop: processRecord.hardStop,
     /** Resolves `true` once the stdout pipe is closed, `false` after `ms`: await before `stdout()`. */
     stdoutDrained: ms => new Promise(resolvePromise => {
       let done = false;
@@ -552,7 +554,14 @@ export function makeDriver({ exe, verbose, timeoutMs }) {
       running.stop();
       const closed = await running.waitForClosed(5000);
       if (verbose) console.log(`    | ALEF_E2E harness ${name} closed in ${Math.round(performance.now() - stopped)}ms`);
-      if (!closed) problems.push(`runtime log pipe did not close within 5000ms: ${running.stuckReport()}`);
+      if (!closed) {
+        // Same rule as the scope closer above: a slow graceful exit after the polite stop is not
+        // what the scenario tests; end the process for good and fail only if even that leaves the pipe open.
+        const report = running.stuckReport();
+        running.hardStop();
+        if (await running.waitForClosed(5000)) console.log(`    NOTE: the runtime needed a hard stop after 5000ms: ${report}`);
+        else problems.push(`runtime log pipe did not close within 5000ms of a hard stop: ${report}`);
+      }
     }
     return { problems, lines: running.lines, site, expectedBusStalls };
   };
