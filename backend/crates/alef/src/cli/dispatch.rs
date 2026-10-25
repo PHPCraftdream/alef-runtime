@@ -13,7 +13,10 @@ use alef_launch::{
     permissions, relaunch, runtimes,
 };
 use alef_runtime::mark;
-use std::ffi::OsString;
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 #[path = "../../apps/window.rs"]
 mod apps_window;
@@ -144,6 +147,54 @@ pub(crate) async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
                 .map_err(Failure::Runtime)?;
             return Ok(0);
         }
+        Command::AppsExport { app, archive } => {
+            let (id, data_dir) = app_data_dir(Path::new(&app)).map_err(Failure::Usage)?;
+            let stats = alef_launch::apps::data::export_app_data(&data_dir, &id, &archive)
+                .map_err(Failure::Usage)?;
+            println!(
+                "Exported {} files ({} bytes) to {}",
+                stats.files,
+                stats.bytes,
+                archive.display()
+            );
+            return Ok(0);
+        }
+        Command::AppsImport {
+            app,
+            archive,
+            confirm_red,
+            json,
+        } => {
+            if !confirm_red {
+                return Err(Failure::Usage(
+                    "import replaces app data; pass --confirm-red to proceed".into(),
+                ));
+            }
+            let (id, data_dir) = app_data_dir(Path::new(&app)).map_err(Failure::Usage)?;
+            let stats = alef_launch::apps::data::import_app_data(&data_dir, &id, &archive)
+                .map_err(Failure::Usage)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "files": stats.files,
+                        "bytes": stats.bytes,
+                        "backup": stats.backup.as_deref().map(|p| p.display().to_string()),
+                    })
+                );
+            } else {
+                println!(
+                    "Imported {} files ({} bytes) from {}",
+                    stats.files,
+                    stats.bytes,
+                    archive.display()
+                );
+                if let Some(backup) = &stats.backup {
+                    println!("Previous data kept in {}", backup.display());
+                }
+            }
+            return Ok(0);
+        }
         Command::Broker { no_tray } => {
             return super::warm::broker::run_broker(no_tray);
         }
@@ -185,6 +236,18 @@ async fn run_cold(
             app_run::finish_app(finish, result).await
         }
     }
+}
+
+/// Resolves the application the user named by path or installed id into its id and data
+/// directory: the same resolution the runtime does (`ALEF_APP_HOME` wins, else the OS
+/// local data base; see `application_base_dirs`).
+fn app_data_dir(app: &Path) -> Result<(String, PathBuf), String> {
+    use alef_launch::apps::AppsIndex;
+    let home = alef_launch::consent::runtime_home();
+    let description = AppsIndex::new(&home, &alef_launch::consent::store()).describe(app)?;
+    let id = description.identity.app_id;
+    let (data, _, _) = alef_launch::application::plan::application_base_dirs(&home);
+    Ok((id.clone(), data.join(&id)))
 }
 
 /// Resolves the launch target into the shared pipeline input, or an exit a relaunch

@@ -3,6 +3,9 @@ use alef_core::security::{
     consent::{Consent, ConsentStore, Decision, Identity, Right, RiskLevel},
     permissions::PermissionSet,
 };
+pub mod data;
+pub mod zip;
+
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::path::Path;

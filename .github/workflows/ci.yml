@@ -421,6 +421,12 @@ jobs:
         shell: bash
         run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "apps-ui,settings-ui,window-singleton" --exe backend/target/debug/alef.exe --timeout-s 150
 
+      - name: "e2e (alef on Servo, Windows, apps data)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
+        timeout-minutes: 30
+        shell: bash
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "apps-data" --exe backend/target/debug/alef.exe --timeout-s 150
+
       - name: "e2e (alef on Servo, Windows, lifecycle/integration: app)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30

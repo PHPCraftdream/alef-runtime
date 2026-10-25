@@ -8,7 +8,13 @@ use std::{
 
 use alef_core::{
     error::{AlefError, ErrorCode},
-    registry::{command::Reply, dispatch::Registry, host::Host},
+    registry::{
+        command::Reply,
+        dialog::{DialogCall, FileFilter, OpenOptions, SaveOptions},
+        dispatch::Registry,
+        host::Host,
+        window::UiCall,
+    },
     security::{
         consent::{ConsentStore, Decision, Identity, Right},
         window::WindowDef,
@@ -40,6 +46,24 @@ struct SetArgs {
     right: Right,
     decision: Decision,
     #[serde(default)]
+    confirm_red: bool,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PickArgs {
+    identity: Identity,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportArgs {
+    identity: Identity,
+    path: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportArgs {
+    identity: Identity,
+    path: String,
     confirm_red: bool,
 }
 #[derive(Debug, Serialize)]
@@ -104,6 +128,133 @@ fn install(registry: &mut Registry, host: Arc<dyn Host>, home: PathBuf) -> Resul
     install_automation(registry)?;
     Ok(())
 }
+/// The data directory of application `id`: `<data base>/<id>` (the same the CLI and the
+/// launch plan use, including the `ALEF_APP_HOME` override).
+fn data_dir(id: &str) -> Result<PathBuf, AlefError> {
+    alef_launch::plan::package_path_vars(id)
+        .map(|vars| vars.app_data)
+        .map_err(internal)
+}
+fn resolve(
+    home: &Path,
+    store: &dyn ConsentStore,
+    identity: &Identity,
+) -> Result<alef_launch::apps::AppEntry, AlefError> {
+    alef_launch::apps::AppsIndex::new(home, store)
+        .list()
+        .map_err(internal)?
+        .into_iter()
+        .find(|entry| &entry.identity == identity)
+        .ok_or_else(|| {
+            invalid(format!(
+                "application {} is not in the list",
+                identity.app_id
+            ))
+        })
+}
+fn zip_filter() -> Vec<FileFilter> {
+    vec![FileFilter {
+        name: "Alef application data".to_owned(),
+        extensions: vec!["zip".to_owned()],
+    }]
+}
+fn default_folder() -> Option<String> {
+    dirs::document_dir()
+        .or_else(dirs::download_dir)
+        .or_else(dirs::home_dir)
+        .map(|folder| folder.to_string_lossy().into_owned())
+}
+async fn pick_export(
+    home: &Path,
+    store: &dyn ConsentStore,
+    host: &dyn Host,
+    window: u64,
+    identity: &Identity,
+) -> Result<serde_json::Value, AlefError> {
+    let entry = resolve(home, store, identity)?;
+    let call = UiCall::Dialog(DialogCall::Save(SaveOptions {
+        title: Some("Export application data".to_owned()),
+        filters: Some(zip_filter()),
+        default_path: default_folder().map(|folder| {
+            Path::new(&folder)
+                .join(format!("{}-data.zip", entry.id))
+                .to_string_lossy()
+                .into_owned()
+        }),
+    }));
+    let reply = host.ui(window, call).await.map_err(internal)?;
+    let path: Option<String> = serde_json::from_value(reply)
+        .map_err(|error| internal(format!("the host gave an unexpected save answer: {error}")))?;
+    Ok(json!({ "path": path }))
+}
+fn export_data(
+    home: &Path,
+    store: &dyn ConsentStore,
+    args: ExportArgs,
+) -> Result<serde_json::Value, AlefError> {
+    let entry = resolve(home, store, &args.identity)?;
+    let stats = alef_launch::apps::data::export_app_data(
+        &data_dir(&entry.id)?,
+        &entry.id,
+        Path::new(&args.path),
+    )
+    .map_err(invalid)?;
+    Ok(json!({ "files": stats.files, "bytes": stats.bytes }))
+}
+async fn pick_import(
+    home: &Path,
+    store: &dyn ConsentStore,
+    host: &dyn Host,
+    window: u64,
+    identity: &Identity,
+) -> Result<serde_json::Value, AlefError> {
+    let entry = resolve(home, store, identity)?;
+    let call = UiCall::Dialog(DialogCall::Open(OpenOptions {
+        title: Some("Import application data".to_owned()),
+        filters: Some(zip_filter()),
+        multiple: Some(false),
+        directory: Some(false),
+        default_path: default_folder(),
+    }));
+    let reply = host.ui(window, call).await.map_err(internal)?;
+    let paths: Vec<String> = serde_json::from_value(reply)
+        .map_err(|error| internal(format!("the host gave an unexpected open answer: {error}")))?;
+    let Some(path) = paths.into_iter().next() else {
+        return Ok(json!({ "path": serde_json::Value::Null }));
+    };
+    let archive = path.clone();
+    let app_id = entry.id.clone();
+    let stats = tokio::task::spawn_blocking(move || {
+        alef_launch::apps::data::inspect_archive(Path::new(&archive), &app_id)
+    })
+    .await
+    .map_err(internal)?
+    .map_err(invalid)?;
+    Ok(json!({ "path": path, "files": stats.files, "bytes": stats.bytes }))
+}
+fn import_data(
+    home: &Path,
+    store: &dyn ConsentStore,
+    args: ImportArgs,
+) -> Result<serde_json::Value, AlefError> {
+    let entry = resolve(home, store, &args.identity)?;
+    if !args.confirm_red {
+        return Err(invalid(format!(
+            "replacing the data of {} is a red action; confirm it first (confirm_red / --confirm-red)",
+            entry.id
+        )));
+    }
+    let archive = Path::new(&args.path);
+    let dir = data_dir(&entry.id)?;
+    alef_launch::apps::data::inspect_archive(archive, &entry.id).map_err(invalid)?;
+    let stats =
+        alef_launch::apps::data::import_app_data(&dir, &entry.id, archive).map_err(invalid)?;
+    Ok(json!({
+        "files": stats.files,
+        "bytes": stats.bytes,
+        "backup": stats.backup.map(|path| path.to_string_lossy().into_owned()),
+    }))
+}
 fn install_commands(
     registry: &mut Registry,
     host: Arc<dyn Host>,
@@ -138,11 +289,81 @@ fn install_commands(
         })?;
     registry
         .register_runtime::<IdentityArgs>("runtime.apps.reset")?
-        .handler(move |_, args| {
+        .handler({
             let home = home.clone();
-            async move {
-                let saved = reset(&home, &store(&home), &args.identity)?;
-                Ok(Reply::Json(saved))
+            move |_, args| {
+                let home = home.clone();
+                async move {
+                    let saved = reset(&home, &store(&home), &args.identity)?;
+                    Ok(Reply::Json(saved))
+                }
+            }
+        })?;
+    registry
+        .register_runtime::<ExportArgs>("runtime.apps.data.export")?
+        .handler({
+            let home = home.clone();
+            move |_, args| {
+                let home = home.clone();
+                async move {
+                    // Packing the data of an application takes seconds: never on the bus thread.
+                    let value = tokio::task::spawn_blocking(move || {
+                        export_data(&home, &store(&home), args)
+                    })
+                    .await
+                    .map_err(internal)??;
+                    Ok(Reply::Json(value))
+                }
+            }
+        })?;
+    registry
+        .register_runtime::<ImportArgs>("runtime.apps.data.import")?
+        .handler({
+            let home = home.clone();
+            move |_, args| {
+                let home = home.clone();
+                async move {
+                    let value = tokio::task::spawn_blocking(move || {
+                        import_data(&home, &store(&home), args)
+                    })
+                    .await
+                    .map_err(internal)??;
+                    Ok(Reply::Json(value))
+                }
+            }
+        })?;
+    registry
+        .register_runtime::<PickArgs>("runtime.apps.data.pickExport")?
+        .handler({
+            let home = home.clone();
+            let host = host.clone();
+            move |ctx, args| {
+                let home = home.clone();
+                let host = host.clone();
+                async move {
+                    let window = ctx.session.window();
+                    Ok(Reply::Json(
+                        pick_export(&home, &store(&home), host.as_ref(), window, &args.identity)
+                            .await?,
+                    ))
+                }
+            }
+        })?;
+    registry
+        .register_runtime::<PickArgs>("runtime.apps.data.pickImport")?
+        .handler({
+            let home = home.clone();
+            let host = host.clone();
+            move |ctx, args| {
+                let home = home.clone();
+                let host = host.clone();
+                async move {
+                    let window = ctx.session.window();
+                    Ok(Reply::Json(
+                        pick_import(&home, &store(&home), host.as_ref(), window, &args.identity)
+                            .await?,
+                    ))
+                }
             }
         })?;
     registry

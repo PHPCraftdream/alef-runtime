@@ -5,7 +5,7 @@ pub mod args;
 pub mod autostart;
 pub mod console;
 pub mod deeplink;
-mod instance;
+pub mod instance;
 mod integration;
 
 #[cfg(windows)]
